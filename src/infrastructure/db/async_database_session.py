@@ -1,86 +1,67 @@
-# src/infrastructure/db/async_database_session.py
-
-"""Настройка асинхронного соединения с БД, сессий и инициализации схем."""
-
+"""
+Файл: src/infrastructure/db/async_database_session.py
+Описание: Настройка асинхронного движка SQLAlchemy и сессионной фабрики.
+Архитектура: Infrastructure слой. Изолирует работу с БД от бизнес-логики.
+"""
 from __future__ import annotations
 
-from pathlib import Path
 from typing import AsyncGenerator
 
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
-# Базовый класс для всех ORM-моделей проекта.
-# Используется для регистрации метаданных (таблиц) перед созданием схемы.
-Base = DeclarativeBase()
 
-# Путь к базе данных (по умолчанию SQLite в папке data рядом с корнем проекта)
-DB_PATH = Path(__file__).parent.parent.parent / "data" / "skedgenie.db"
-DB_URL = f"sqlite+aiosqlite:///{DB_PATH}"
+class Base(DeclarativeBase):
+    """Базовый класс для ORM-моделей. Не инстанцируется напрямую."""
+    pass
 
-# Глобальные переменные для синглтон-паттерна движка и фабрики
+
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
-def get_engine(database_url: str = DB_URL) -> AsyncEngine:
-    """Возвращает или создает асинхронный движок SQLAlchemy.
-
-    :param database_url: Строка подключения к БД (по умолчанию aiosqlite).
-    :return: Экземпляр AsyncEngine.
-    """
+def get_engine(database_url: str) -> AsyncEngine:
+    """Получить или создать асинхронный движок БД."""
     global _engine
     if _engine is None:
         _engine = create_async_engine(
             database_url,
-            echo=False,  # Включите True для отладки SQL-запросов
+            echo=False,
+            future=True,
             pool_pre_ping=True,
         )
     return _engine
 
 
-def get_session_factory() -> async_sessionmaker[AsyncSession]:
-    """Возвращает или создает фабрику асинхронных сессий.
-
-    :return: Экземпляр async_sessionmaker.
-    """
+def get_session_factory(database_url: str) -> async_sessionmaker[AsyncSession]:
+    """Получить фабрику сессий (ленивая инициализация)."""
     global _session_factory
     if _session_factory is None:
+        engine = get_engine(database_url)
         _session_factory = async_sessionmaker(
-            bind=get_engine(),
+            bind=engine,
             class_=AsyncSession,
             expire_on_commit=False,
+            autoflush=False,
         )
     return _session_factory
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    """Генератор контекста сессии.
-
-    Позволяет использовать сессию как асинхронный контекстный менеджер
-    в сервисном слое или middleware.
-    """
-    factory = get_session_factory()
+    """Контекстный менеджер для получения сессии."""
+    factory = get_session_factory("sqlite+aiosqlite:///./data/skedgenie.db")
     async with factory() as session:
         yield session
 
 
 async def init_db(dev_reset: bool = False) -> None:
-    """Инициализирует базу данных, создавая таблицы по метаданным моделей.
+    """Инициализировать схему БД. При dev_reset — сбросить данные."""
+    engine = get_engine("sqlite+aiosqlite:///./data/skedgenie.db")
 
-    :param dev_reset: Если True, удаляет все таблицы перед созданием.
-                      Используется для сброса состояния на этапе разработки.
-    """
-    engine = get_engine()
-    async with engine.begin() as conn:
-        if dev_reset:
-            # Удаляем все таблицы, зарегистрированные в Base.metadata
+    if dev_reset:
+        async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.drop_all)
-        # Создаем таблицы, которых еще нет в БД
+
+    async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

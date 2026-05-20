@@ -1,8 +1,6 @@
-# src/presentation/widgets/task_manager_widget.py
-
 """
 Файл: src/presentation/widgets/task_manager_widget.py
-Описание: Виджет управления задачами планирования. Содержит таблицу списка,
+Описание: Виджет управления задачами планирования. Содержит таблицу списка, 
           диалог создания/редактирования с валидацией и точки интеграции с TaskController.
 Архитектура: Presentation слой. Не содержит асинхронного кода или прямых вызовов БД.
 """
@@ -162,10 +160,10 @@ class TaskManagerWidget(QWidget):
         self.lbl_status.setStyleSheet("color: #666; font-size: 11px;")
         layout.addWidget(self.lbl_status)
 
-        # Привязка кнопок
+        # Привязка кнопок (исправлено: имена методов приведены в соответствие с определениями)
         self.btn_add.clicked.connect(self._on_add)
-        self.btn_edit.clicked.connect(self._on_edit)
-        self.btn_del.clicked.connect(self._on_delete)
+        self.btn_edit.clicked.connect(self._trigger_edit)
+        self.btn_del.clicked.connect(self._trigger_delete)
         self.btn_refresh.clicked.connect(lambda: self.request_load_all.emit())
 
     def _connect_controller(self) -> None:
@@ -181,10 +179,6 @@ class TaskManagerWidget(QWidget):
             self._controller.operation_succeeded.connect(lambda msg: self.lbl_status.setText(msg))
         if hasattr(self._controller, "operation_failed"):
             self._controller.operation_failed.connect(lambda err: self.lbl_status.setText(f"Ошибка: {err}"))
-
-        self.btn_add.clicked.connect(lambda: self.request_create.emit(None))
-        self.btn_edit.clicked.connect(self._trigger_edit)
-        self.btn_del.clicked.connect(self._trigger_delete)
 
     def _on_selection_changed(self) -> None:
         has_selection = len(self.table.selectedItems()) > 0
@@ -220,7 +214,6 @@ class TaskManagerWidget(QWidget):
         row = self.table.currentRow()
         if row == -1:
             return
-        # В реальном DI здесь берем из кэша контроллера, пока заглушка
         self._logger.debug("Edit triggered (requires controller task cache in next iteration)")
         QMessageBox.information(self, "Инфо", "Режим редактирования будет активирован после привязки кэша контроллера.")
 
@@ -228,8 +221,8 @@ class TaskManagerWidget(QWidget):
         row = self.table.currentRow()
         if row == -1:
             return
-        # Заглушка: в финале берем UUID из скрытого столбца или кэша
         QMessageBox.information(self, "Инфо", "Удаление требует связи с TaskController (Итерация 1.2)")
 
     def get_selected_task_index(self) -> int:
         return self.table.currentRow()
+

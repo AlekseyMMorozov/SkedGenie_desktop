@@ -1,106 +1,93 @@
-# src/infrastructure/repositories/task_repository.py
-"""Реализация репозитория задач планирования на SQLAlchemy 2.0 Async."""
-
+"""
+Файл: src/infrastructure/repositories/task_repository.py
+Описание: Реализация репозитория для PlanningTask на SQLAlchemy 2.0 Async.
+Архитектура: Infrastructure слой. Зависит от Application интерфейсов и ORM-моделей.
+"""
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 
 from sqlalchemy import select, delete
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from src.application.interfaces.task_repository_interface import ITaskRepository
 from src.domain.tasks.planning_task_model import PlanningTask, PeriodType
 from src.infrastructure.db.models.task_orm_model import TaskORMModel
-from src.infrastructure.db.async_database_session import get_session_factory
 
 
 class TaskSQLAlchemyRepository(ITaskRepository):
-    """Асинхронный репозиторий для CRUD-операций над задачами планирования.
+    """Асинхронный репозиторий для работы с задачами планирования через SQLAlchemy."""
 
-    Выполняет двусторонний маппинг между доменной Pydantic-моделью и SQLAlchemy ORM.
-    Использует глобальную фабрику сессий для изоляции транзакций.
-    """
+    def __init__(self, session_factory: async_sessionmaker):
+        """Инициализация с фабрикой сессий (внедряется из Composition Root)."""
+        self._session_factory = session_factory
 
     @staticmethod
     def _to_orm(domain: PlanningTask) -> TaskORMModel:
-        """Преобразует доменную сущность в ORM-объект для сохранения в БД."""
+        """Конвертация доменной модели в ORM-модель."""
         return TaskORMModel(
-            id=str(domain.id),
+            id=domain.id,
             name=domain.name,
             period_type=domain.period_type.value,
-            anchor_date=domain.anchor_date,
-            custom_start_date=domain.custom_start_date,
-            custom_end_date=domain.custom_end_date,
-            start_date=domain.start_date,
-            end_date=domain.end_date,
-            employee_ids=[str(uid) for uid in domain.employee_ids],
-            duty_type_ids=[str(uid) for uid in domain.duty_type_ids],
+            period_start=domain.period_start,
+            period_end=domain.period_end,
+            reference_id=domain.reference_id,
             created_at=domain.created_at,
             updated_at=domain.updated_at,
         )
 
     @staticmethod
     def _to_domain(orm: TaskORMModel) -> PlanningTask:
-        """Преобразует ORM-объект из БД в доменную сущность."""
+        """Конвертация ORM-модели в доменную модель."""
         return PlanningTask(
-            id=UUID(orm.id),
+            id=orm.id,
             name=orm.name,
             period_type=PeriodType(orm.period_type),
-            anchor_date=orm.anchor_date,
-            custom_start_date=orm.custom_start_date,
-            custom_end_date=orm.custom_end_date,
-            start_date=orm.start_date,
-            end_date=orm.end_date,
-            employee_ids=[UUID(uid) for uid in orm.employee_ids],
-            duty_type_ids=[UUID(uid) for uid in orm.duty_type_ids],
+            period_start=orm.period_start,
+            period_end=orm.period_end,
+            reference_id=orm.reference_id,
             created_at=orm.created_at,
             updated_at=orm.updated_at,
         )
 
     async def get_by_id(self, task_id: UUID) -> Optional[PlanningTask]:
-        async with get_session_factory()() as session:
-            stmt = select(TaskORMModel).where(TaskORMModel.id == str(task_id))
-            result = await session.execute(stmt)
-            orm = result.scalar_one_or_none()
-            return self._to_domain(orm) if orm else None
+        """Получить задачу по ID."""
+        async with self._session_factory() as session:
+            result = await session.get(TaskORMModel, task_id)
+            return self._to_domain(result) if result else None
 
-    async def get_all(self) -> list[PlanningTask]:
-        async with get_session_factory()() as session:
-            stmt = select(TaskORMModel).order_by(TaskORMModel.created_at.desc())
-            result = await session.execute(stmt)
-            return [self._to_domain(row) for row in result.scalars().all()]
+    async def get_all(self) -> List[PlanningTask]:
+        """Получить все задачи, отсортированные по дате создания."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(TaskORMModel).order_by(TaskORMModel.created_at.desc())
+            )
+            return [self._to_domain(orm) for orm in result.scalars().all()]
 
     async def create(self, task: PlanningTask) -> PlanningTask:
-        async with get_session_factory()() as session:
-            orm = self._to_orm(task)
-            session.add(orm)
+        """Создать новую задачу."""
+        async with self._session_factory() as session:
+            orm_task = self._to_orm(task)
+            session.add(orm_task)
             await session.commit()
-            await session.refresh(orm)
-            return self._to_domain(orm)
+            await session.refresh(orm_task)
+            return self._to_domain(orm_task)
 
     async def update(self, task: PlanningTask) -> PlanningTask:
-        async with get_session_factory()() as session:
-            orm = await session.get(TaskORMModel, str(task.id))
-            if orm is None:
-                raise ValueError(f"Задача с ID {task.id} не найдена в хранилище")
-
-            # Применяем изменения из доменной модели к ORM-объекту
-            for key, value in task.model_dump(exclude={'id', 'created_at'}).items():
-                if key == 'period_type':
-                    value = value.value
-                elif key in ('employee_ids', 'duty_type_ids'):
-                    value = [str(uid) for uid in value]
-                setattr(orm, key, value)
-
-            orm.updated_at = datetime.now()
+        """Обновить существующую задачу."""
+        async with self._session_factory() as session:
+            orm_task = self._to_orm(task)
+            orm_task.updated_at = datetime.utcnow()
+            await session.merge(orm_task)
             await session.commit()
-            await session.refresh(orm)
-            return self._to_domain(orm)
+            await session.refresh(orm_task)
+            return self._to_domain(orm_task)
 
     async def delete(self, task_id: UUID) -> None:
-        async with get_session_factory()() as session:
-            stmt = delete(TaskORMModel).where(TaskORMModel.id == str(task_id))
-            await session.execute(stmt)
+        """Удалить задачу по ID."""
+        async with self._session_factory() as session:
+            await session.execute(delete(TaskORMModel).where(TaskORMModel.id == task_id))
             await session.commit()
 
