@@ -100,7 +100,7 @@ class EmployeeListWidget(ctk.CTkFrame):
 
         view_button = ctk.CTkButton(
             button_frame,
-            text="Просмотреть",
+            text="Просмотр",
             command=self._on_view_click,
             width=120,
         )
@@ -118,7 +118,7 @@ class EmployeeListWidget(ctk.CTkFrame):
 
         archive_button = ctk.CTkButton(
             button_frame,
-            text="Архивировать",
+            text="Вкл\Выкл",
             command=self._on_archive_click,
             width=120,
         )
@@ -163,8 +163,6 @@ class EmployeeListWidget(ctk.CTkFrame):
         self._tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        # Двойной клик → просмотр карточки (через координатор)
-        self._tree.bind("<Double-1>", lambda e: self._on_view_click())
 
     def _configure_treeview_style(self) -> None:
         """Настроить стили для Treeview (светлая/тёмная тема)."""

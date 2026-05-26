@@ -53,6 +53,7 @@ class AsyncBridge:
 
         self._start_worker()
 
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -70,6 +71,7 @@ class AsyncBridge:
             self._THREAD_NAME,
         )
 
+
     def _run_loop(self) -> None:
         """Точка входа worker-потока: устанавливает loop и запускает его."""
         asyncio.set_event_loop(self._loop)
@@ -82,6 +84,7 @@ class AsyncBridge:
             )
         finally:
             self._logger.debug("AsyncBridge: run_forever() завершён")
+
 
     def is_running(self) -> bool:
         """Возвращает ``True``, если мост активен и принимает корутины.
@@ -96,21 +99,7 @@ class AsyncBridge:
         )
 
     def shutdown(self) -> None:
-        """Неблокирующая остановка event loop и worker-потока.
-
-        Последовательность:
-            1. Помечаем мост как остановленный.
-            2. Планируем ``_shutdown_procedure()`` внутри worker-потока
-               (не блокируя GUI-поток — результат не ждём).
-            3. Ждём завершения потока с коротким таймаутом.
-            4. Если поток не завершился — это допустимо для daemon-потока,
-               ОС завершит его при выходе из процесса.
-
-        Метод неблокирующий — возвращает управление GUI-потоку сразу,
-        чтобы не подвешивать интерфейс при закрытии окна.
-
-        Безопасно вызывать несколько раз подряд.
-        """
+        """Неблокирующая остановка event loop и worker-потока."""
         if not self._is_running:
             self._logger.debug("AsyncBridge: shutdown пропущен (уже остановлен)")
             return
@@ -119,7 +108,6 @@ class AsyncBridge:
         self._logger.info("AsyncBridge: инициирована остановка")
 
         # Планируем shutdown-процедуру ВНУТРИ worker-потока.
-        # Результат НЕ ждём блокирующе — это бы подвесило GUI.
         if self._loop.is_running():
             try:
                 asyncio.run_coroutine_threadsafe(
@@ -132,7 +120,7 @@ class AsyncBridge:
                     exc,
                 )
 
-        # Ждём завершения потока с коротким таймаутом.
+        # Ждём завершения потока с таймаутом.
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=self._SHUTDOWN_JOIN_TIMEOUT)
             if self._thread.is_alive():
@@ -141,10 +129,18 @@ class AsyncBridge:
                     "(daemon=True, будет завершён ОС при выходе из процесса)",
                     self._SHUTDOWN_JOIN_TIMEOUT,
                 )
+                # ✅ Fallback для Windows: принудительно закрываем loop из main-потока
+                try:
+                    if not self._loop.is_closed():
+                        self._loop.call_soon_threadsafe(self._loop.stop)
+                        # Даём циклу 0.3 сек на реакцию
+                        self._thread.join(timeout=0.3)
+                except Exception:
+                    pass
             else:
                 self._logger.debug("AsyncBridge: worker-поток остановлен корректно")
 
-        # Закрываем loop в main-потоке (освобождает ресурсы).
+        # ✅ Закрываем loop в main-потоке (освобождает ресурсы)
         try:
             if not self._loop.is_closed():
                 self._loop.close()
@@ -153,19 +149,10 @@ class AsyncBridge:
             self._logger.exception("AsyncBridge: ошибка при закрытии event loop")
 
         self._logger.info("AsyncBridge: остановка завершена")
+        
 
     async def _shutdown_procedure(self) -> None:
-        """Полная процедура graceful shutdown (coroutine внутри worker-потока).
-
-        Планируется через ``run_coroutine_threadsafe`` в ``shutdown()``.
-        Выполняется внутри ``run_forever()`` — ``await`` работает штатно.
-
-        Шаги:
-            1. Отмена всех pending задач, кроме текущей (shutdown-процедуры).
-            2. Ожидание завершения отменённых задач через ``asyncio.gather``.
-            3. Закрытие async-генераторов (SQLAlchemy-сессии).
-            4. Остановка loop через ``call_soon(loop.stop)``.
-        """
+        """Полная процедура graceful shutdown (coroutine внутри worker-потока)."""
         try:
             # 1. Отменяем все pending задачи, кроме текущей.
             current = asyncio.current_task()
@@ -180,17 +167,15 @@ class AsyncBridge:
                 )
                 for task in pending:
                     task.cancel()
-
-                # 2. Ждём завершения отменённых задач.
                 try:
                     await asyncio.gather(*pending, return_exceptions=True)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     self._logger.debug(
                         "AsyncBridge: gather завершился с исключениями (ожидаемо)",
                         exc_info=True,
                     )
 
-            # 3. Закрываем async-генераторы (SQLAlchemy-сессии/курсоры).
+            # 2. Закрываем async-генераторы (сессии БД).
             try:
                 await self._loop.shutdown_asyncgens()
                 self._logger.debug("AsyncBridge: asyncgens закрыты")
@@ -200,23 +185,17 @@ class AsyncBridge:
                     exc_info=True,
                 )
 
-            # 4. НЕ вызываем shutdown_default_executor() — он вызывает deadlock
-            # в Windows при работе с asyncio + aiosqlite. Executor daemon-потоки
-            # всё равно завершатся при выходе из процесса.
-
-            # 5. Останавливаем loop через call_soon_threadsafe (безопаснее).
-            self._logger.debug("AsyncBridge: планирование loop.stop()")
-            self._loop.call_soon_threadsafe(self._loop.stop)
+            # 3. ✅ КРИТИЧНО для Windows/Proactor: НЕ вызываем loop.stop() здесь.
+            #    Мы внутри loop, и stop() может не сработать, если loop заблокирован.
+            #    Вместо этого просто завершаем корутину — loop остановится сам,
+            #    когда не останется задач.
+            self._logger.debug("AsyncBridge: _shutdown_procedure завершена")
 
         except Exception:
             self._logger.exception(
                 "AsyncBridge: критическая ошибка в shutdown-процедуре",
             )
-            # Fallback: всё равно пытаемся остановить loop.
-            try:
-                self._loop.call_soon_threadsafe(self._loop.stop)
-            except Exception:
-                pass
+
 
     # ------------------------------------------------------------------
     # Public API (обратно совместим с итерацией №1)

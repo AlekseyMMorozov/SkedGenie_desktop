@@ -102,7 +102,7 @@ class EmployeeCardDialog(ctk.CTkToplevel):
     # ------------------------------------------------------------------
     def _setup_window(self) -> None:
         """Настроить размеры, позицию и модальность окна."""
-        self.title(f"Карточка сотрудника: {self._employee.get_full_name()}")
+        self.title(f"Карточка сотрудника: {self._employee.full_name}")
         self.geometry("700x800")
         self.resizable(False, True)
 

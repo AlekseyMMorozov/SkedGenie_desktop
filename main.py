@@ -172,6 +172,7 @@ def main() -> None:
         )
         sys.exit(1)
 
+
     # ------------------------------------------------------------------
     # Этап 6: Создание главного окна
     # ------------------------------------------------------------------
@@ -180,10 +181,16 @@ def main() -> None:
 
         window = MainWindow(
             task_controller=task_controller,
-            employee_controller=employee_controller,  # передан через **kwargs
+            employee_controller=employee_controller,
             logger=logger,
             settings=settings_manager,
         )
+
+        # ✅ КРИТИЧНО: привязываем обработчик закрытия окна
+        # Вызываем _setup_closing_handler(), который внутри делает:
+        #   self.protocol("WM_DELETE_WINDOW", self._on_closing)
+        window._setup_closing_handler()
+
         logger.info("Главное окно создано")
     except Exception as exc:
         logger.critical(
@@ -192,6 +199,7 @@ def main() -> None:
             exc_info=True,
         )
         sys.exit(1)
+
 
     # ------------------------------------------------------------------
     # Этап 7: Создание GUI-хэндлера и привязка к панели логов
@@ -233,7 +241,16 @@ def main() -> None:
         )
         sys.exit(1)
     finally:
+        # ✅ Этот блок выполняется всегда после выхода из mainloop
         logger.info("=== SkedGenie завершён ===")
+
+        # ✅ Для Windows: гарантируем чистый выход процесса
+        # (daemon-потоки могут не успеть завершиться штатно)
+        if sys.platform == "win32":
+            import os
+            os._exit(0)  # ✅ Мгновенное завершение без вызова __del__/atexit
+        else:
+            sys.exit(0)
 
 
 if __name__ == "__main__":

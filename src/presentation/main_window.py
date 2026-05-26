@@ -313,8 +313,9 @@ class MainWindow(ctk.CTk):
         )
 
     def _setup_closing_handler(self) -> None:
-        """Настройка обработчика закрытия окна."""
+        """Привязка обработчика закрытия окна (WM_DELETE_WINDOW)."""
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
+        self._logger.debug("MainWindow: обработчик закрытия окна привязан")
 
     # ------------------------------------------------------------------
     # Переключение страниц
@@ -457,24 +458,34 @@ class MainWindow(ctk.CTk):
             appearance = "Light"
         return colors_map.get(appearance, default)
 
+
     # ------------------------------------------------------------------
     # Window lifecycle
     # ------------------------------------------------------------------
     def _on_closing(self) -> None:
-        """Обработчик закрытия окна: graceful shutdown."""
-        log_user_action(
-            self._logger,
-            "Закрытие приложения",
-            "Пользователь закрыл окно",
-        )
+        """Обработчик закрытия окна."""
         self._logger.info("MainWindow: инициировано закрытие окна")
 
-        if self._bridge.is_running():
-            self._logger.debug("MainWindow: остановка AsyncBridge")
-            self._bridge.shutdown()
+        try:
+            if hasattr(self, '_bridge') and self._bridge:
+                self._logger.debug("MainWindow: вызов bridge.shutdown()")
+                self._bridge.shutdown()
+                self._logger.debug("MainWindow: bridge.shutdown() завершён")
+        except Exception as exc:
+            self._logger.error("MainWindow: ошибка при shutdown bridge: %s", exc, exc_info=True)
 
-        self.destroy()
-        self._logger.info("MainWindow: окно закрыто")
+        try:
+            self._logger.debug("MainWindow: вызов destroy()")
+            self.destroy()
+            self._logger.debug("MainWindow: destroy() завершён")
+        except Exception as exc:
+            self._logger.error("MainWindow: ошибка при destroy: %s", exc, exc_info=True)
+
+        # ✅ Fallback для Windows: если процесс всё ещё висит — завершаем
+        if sys.platform == "win32":
+            import os
+            os._exit(0)
+
 
     def run(self) -> None:
         """Запуск главного цикла событий."""
@@ -482,24 +493,44 @@ class MainWindow(ctk.CTk):
         self._logger.info("MainWindow: запуск mainloop")
         self.mainloop()
 
+
     def _initial_load(self) -> None:
+        """Первичная загрузка данных с отложенным стартом для стабильности на Windows."""
         self._logger.info("MainWindow: первичная загрузка данных из БД")
 
-        # ✅ Даём времени на полную отрисовку окна
-        def _deferred_load():
-            if self._task_widget:
+        # ✅ Выносим логику в отдельный метод класса — надёжнее для Tkinter callbacks
+        self.after(300, self._do_initial_load)
+
+
+    def _do_initial_load(self) -> None:
+        """Внутренний метод для отложенной загрузки (вызывается через after)."""
+        try:
+            # ✅ Проверка: окно ещё существует?
+            if not self.winfo_exists():
+                self._logger.debug("MainWindow: окно уничтожено, отмена загрузки")
+                return
+
+            # ✅ Безопасный доступ к виджетам через локальные переменные
+            task_widget = getattr(self, '_task_widget', None)
+            employee_widget = getattr(self, '_employee_widget', None)
+
+            if task_widget and hasattr(task_widget, 'refresh'):
                 self._bridge.run(
                     self._task_controller.get_all_tasks(),
-                    on_success=self._task_widget.refresh,
-                    on_error=self._task_widget._on_refresh_error
+                    on_success=task_widget.refresh,
+                    on_error=task_widget._on_refresh_error
                 )
-            if self._employee_widget:
+            if employee_widget and hasattr(employee_widget, 'refresh'):
                 self._bridge.run(
                     self._employee_controller.get_all_employees(),
-                    on_success=self._employee_widget.refresh,
-                    on_error=self._employee_widget._on_refresh_error
+                    on_success=employee_widget.refresh,
+                    on_error=employee_widget._on_refresh_error
                 )
-
-        self.after(200, _deferred_load)  # ✅ 200мс задержка
+        except Exception as exc:
+            self._logger.error(
+                "MainWindow: ошибка при отложенной загрузке: %s",
+                exc,
+                exc_info=True
+            )
 
 

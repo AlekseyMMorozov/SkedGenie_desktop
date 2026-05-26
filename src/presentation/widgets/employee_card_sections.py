@@ -129,7 +129,7 @@ def create_header_section(
     section.pack(fill="x", pady=(0, 20))
 
     title_font = fm.get_font("title") if fm else ctk.CTkFont(size=20, weight="bold")
-    full_name = employee.get_full_name()
+    full_name = employee.full_name
 
     name_label = ctk.CTkLabel(
         section,

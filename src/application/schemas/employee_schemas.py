@@ -1,4 +1,3 @@
-# src/application/schemas/employee_schemas.py
 """
 Pydantic-схемы для DTO сотрудников.
 
@@ -21,7 +20,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.domain.employees.employee_exceptions import InvalidEmployeeNameError
 
-
 # Простой regex для email (без зависимости email-validator).
 _EMAIL_REGEX = re.compile(
     r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$"
@@ -34,6 +32,8 @@ class EmployeeCreateSchema(BaseModel):
     Обязательные поля: ``last_name``, ``first_name``.
     Отчество (``middle_name``) опционально.
     Остальные поля могут быть заполнены позже при редактировании.
+
+    Новый сотрудник создаётся активным по умолчанию (is_active=True).
     """
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -84,6 +84,12 @@ class EmployeeCreateSchema(BaseModel):
     engagement_ids: Optional[List[UUID]] = Field(
         default=None,
         description="ID видов задействований, к которым допущен сотрудник",
+    )
+
+    # ✅ ДОБАВЛЕНО: статус активности (новый сотрудник активен по умолчанию)
+    is_active: bool = Field(
+        default=True,
+        description="Активен ли сотрудник (по умолчанию True)",
     )
 
     # ------------------------------------------------------------------
@@ -265,7 +271,7 @@ class EmployeeReadSchema(BaseModel):
     full_name: Optional[str] = Field(
         default=None,
         description="Полное ФИО ('Фамилия Имя Отчество'). "
-        "Если не передано явно — вычисляется в контроллере.",
+                    "Если не передано явно — вычисляется в контроллере.",
     )
 
     position: Optional[str] = None
