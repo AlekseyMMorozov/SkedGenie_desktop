@@ -1,10 +1,12 @@
-# src/application/schemas/task_schemas.py
-"""Pydantic-схемы (DTO) для передачи данных задач планирования между слоями."""
-
+"""
+Файл: src/application/schemas/task_schemas.py
+Описание: Pydantic-схемы для DTO задачи планирования.
+Архитектура: Application слой. Валидация на границе домена.
+"""
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -13,44 +15,51 @@ from src.domain.tasks.planning_task_model import PeriodType
 
 
 class TaskCreateSchema(BaseModel):
-    """Схема данных для создания новой задачи планирования."""
-    model_config = ConfigDict(frozen=False)
+    """Схема создания задачи планирования.
 
-    name: str = Field(..., min_length=1, description="Название задачи")
-    period_type: PeriodType = Field(..., description="Тип планировочного периода")
-    anchor_date: date = Field(..., description="Опорная дата, выбранная в календаре")
-    custom_start_date: Optional[date] = Field(None, description="Начало периода (только для CUSTOM)")
-    custom_end_date: Optional[date] = Field(None, description="Окончание периода (только для CUSTOM)")
-    employee_ids: list[UUID] = Field(..., description="Список идентификаторов сотрудников")
-    duty_type_ids: list[UUID] = Field(..., description="Список идентификаторов типов задействований")
+    Обязательные поля: только name и period_type.
+    Остальные поля могут быть добавлены позже при редактировании.
+    """
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    name: str = Field(..., min_length=1, max_length=255, description="Название задачи")
+    period_type: PeriodType = Field(..., description="Тип периода планирования")
+
+    # Опциональные поля (добавляются позже)
+    anchor_date: Optional[date] = Field(default=None, description="Базовая дата для расчёта периодов")
+    employee_ids: Optional[List[UUID]] = Field(default=None, description="ID сотрудников, закреплённых за задачей")
+    duty_type_ids: Optional[List[UUID]] = Field(default=None, description="ID типов задействований для задачи")
+    reference_id: Optional[str] = Field(default=None, max_length=255, description="Внешний идентификатор/ссылка")
 
 
 class TaskUpdateSchema(BaseModel):
-    """Схема данных для частичного обновления существующей задачи."""
-    model_config = ConfigDict(frozen=False)
+    """Схема обновления задачи планирования.
 
-    name: Optional[str] = Field(None, min_length=1)
-    period_type: Optional[PeriodType] = None
-    anchor_date: Optional[date] = None
-    custom_start_date: Optional[date] = None
-    custom_end_date: Optional[date] = None
-    employee_ids: Optional[list[UUID]] = None
-    duty_type_ids: Optional[list[UUID]] = None
+    Все поля опциональны — обновляются только переданные значения.
+    """
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID = Field(..., description="Уникальный идентификатор задачи")
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    period_type: Optional[PeriodType] = Field(default=None)
+    anchor_date: Optional[date] = Field(default=None)
+    employee_ids: Optional[List[UUID]] = Field(default=None)
+    duty_type_ids: Optional[List[UUID]] = Field(default=None)
+    reference_id: Optional[str] = Field(default=None, max_length=255)
 
 
 class TaskReadSchema(BaseModel):
-    """Схема данных для чтения и отображения задачи планирования."""
+    """Схема чтения задачи планирования (для отображения в UI)."""
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     name: str
-    period_type: PeriodType
-    anchor_date: date
-    custom_start_date: Optional[date]
-    custom_end_date: Optional[date]
-    start_date: date
-    end_date: date
-    employee_ids: list[UUID]
-    duty_type_ids: list[UUID]
+    period_type: str  # Строковое значение для удобства отображения
+    anchor_date: Optional[date] = None
+    employee_ids: Optional[List[UUID]] = None
+    duty_type_ids: Optional[List[UUID]] = None
+    reference_id: Optional[str] = None
     created_at: datetime
-    updated_at: datetime
+    updated_at: Optional[datetime] = None
+

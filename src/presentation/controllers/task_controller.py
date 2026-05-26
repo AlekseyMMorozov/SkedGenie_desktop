@@ -1,147 +1,392 @@
 # src/presentation/controllers/task_controller.py
-
 """
-Файл: src/presentation/controllers/task_controller.py
-Описание: Контроллер-посредник между Presentation (UI) и Application/Infrastructure.
-          Запускает асинхронные CRUD-операции в фоновых потоках, транслирует результаты
-          в Qt-сигналы и управляет локальным кэшем DTO для быстрого доступа UI.
-Архитектура: Presentation слой. Не содержит ORM-кода. Использует DI для ITaskRepository.
+Контроллер для CRUD-операций над задачами планирования.
+
+Предоставляет тонкий фасад над :class:`ITaskRepository`, отвечающий за:
+    - Преобразование ``Schema ↔ PlanningTask`` (изоляция UI от Domain).
+    - Проверку уникальности названия задачи перед созданием/обновлением.
+    - Логирование пользовательских действий через :func:`log_user_action`.
+    - Обработку исключений (:class:`TaskDomainError`, :class:`SQLAlchemyError`)
+      с пробросом в UI для отображения ошибок пользователю.
+    - Возврат :class:`TaskReadSchema` (DTO) для отображения в таблице.
+
+Все методы асинхронные — вызываются через :class:`AsyncBridge` из GUI-потока.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
-import threading
-from typing import List, Optional
+from typing import Optional
 from uuid import UUID
 
-from PySide6.QtCore import QObject, Signal
+from sqlalchemy.exc import SQLAlchemyError
 
 from src.application.interfaces.task_repository_interface import ITaskRepository
-from src.application.schemas.task_schemas import TaskCreateSchema, TaskUpdateSchema, TaskReadSchema
+from src.application.schemas.task_schemas import (
+    TaskCreateSchema,
+    TaskReadSchema,
+    TaskUpdateSchema,
+)
+from src.core.logging_config import log_user_action, log_user_error
 from src.domain.tasks.planning_task_model import PlanningTask
-from src.domain.tasks.task_exceptions import TaskDomainError
+from src.domain.tasks.task_exceptions import (
+    TaskDomainError,
+    DuplicateTaskNameError,
+)
 
 
-class TaskController(QObject):
-    """Контроллер управления задачами планирования.
+class TaskController:
+    """Контроллер для управления задачами планирования.
 
-    Связывает асинхронный репозиторий с синхронным UI через Qt-сигналы.
-    Гарантирует, что блокирующие/асинхронные операции не замораживают интерфейс.
+    Оборачивает репозиторий, добавляя логирование пользовательских действий,
+    проверку уникальности названия и преобразование между DTO
+    (:class:`TaskCreateSchema`, :class:`TaskReadSchema`) и Domain-объектами
+    (:class:`PlanningTask`).
+
+    Attributes:
+        _repository: Репозиторий для работы с задачами (через интерфейс).
+        _logger: Логгер для событий контроллера.
     """
 
-    tasks_loaded = Signal(list)  # List[TaskReadSchema]
-    operation_succeeded = Signal(str)  # Краткое сообщение об успехе
-    operation_failed = Signal(str)  # Текст ошибки для отображения
+    def __init__(
+        self,
+        repository: ITaskRepository,
+        logger: logging.Logger,
+    ) -> None:
+        """Инициализация контроллера.
 
-    def __init__(self, repository: ITaskRepository, parent=None):
-        super().__init__(parent)
-        self._repo = repository
-        self._logger = logging.getLogger(__name__)
-        self._cache: List[TaskReadSchema] = []
+        Args:
+            repository: Репозиторий задач (реализация :class:`ITaskRepository`).
+            logger: Логгер для событий контроллера.
+        """
+        self._repository = repository
+        self._logger = logger
 
-    # --- Публичные методы (вызываются из UI) ---
-    def load_tasks(self) -> None:
-        """Запрос на загрузку всех задач."""
-        self._dispatch_async(self._execute_load_all, success_msg="Задачи обновлены")
+    # ------------------------------------------------------------------
+    # Read operations
+    # ------------------------------------------------------------------
+    async def get_all_tasks(self) -> list[TaskReadSchema]:
+        """Получить список всех задач планирования."""
+        self._logger.debug("TaskController: запрос списка всех задач")
+        try:
+            tasks = await self._repository.get_all()
+            result = [TaskReadSchema.model_validate(task) for task in tasks]
+            self._logger.debug(
+                "TaskController: получено %d задач",
+                len(result),
+            )
+            return result
+        except SQLAlchemyError as exc:
+            log_user_error(
+                self._logger,
+                "Получение списка задач",
+                f"Ошибка БД: {exc}",
+            )
+            raise
+        except Exception as exc:
+            self._logger.error(
+                "TaskController: непредвиденная ошибка при получении задач: %s",
+                exc,
+                exc_info=True,
+            )
+            log_user_error(
+                self._logger,
+                "Получение списка задач",
+                f"Непредвиденная ошибка: {exc}",
+            )
+            raise
 
-    def create_task(self, schema: TaskCreateSchema) -> None:
-        """Запрос на создание новой задачи."""
-        self._dispatch_async(self._execute_create, schema, success_msg="Задача успешно создана")
+    async def get_task_by_id(
+        self,
+        task_id: UUID,
+    ) -> Optional[TaskReadSchema]:
+        """Получить задачу по ID."""
+        self._logger.debug(
+            "TaskController: запрос задачи по ID=%s",
+            task_id,
+        )
+        try:
+            task = await self._repository.get_by_id(task_id)
+            if task is None:
+                self._logger.warning(
+                    "TaskController: задача с ID=%s не найдена",
+                    task_id,
+                )
+                return None
+            result = TaskReadSchema.model_validate(task)
+            self._logger.debug(
+                "TaskController: задача получена: %s",
+                result.name,
+            )
+            return result
+        except SQLAlchemyError as exc:
+            log_user_error(
+                self._logger,
+                "Получение задачи по ID",
+                f"ID={task_id}, Ошибка БД: {exc}",
+            )
+            raise
+        except Exception as exc:
+            self._logger.error(
+                "TaskController: непредвиденная ошибка при получении задачи: %s",
+                exc,
+                exc_info=True,
+            )
+            log_user_error(
+                self._logger,
+                "Получение задачи по ID",
+                f"ID={task_id}, Непредвиденная ошибка: {exc}",
+            )
+            raise
 
-    def update_task(self, schema: TaskUpdateSchema) -> None:
-        """Запрос на обновление существующей задачи."""
-        self._dispatch_async(self._execute_update, schema, success_msg="Задача обновлена")
+    # ------------------------------------------------------------------
+    # Create operation
+    # ------------------------------------------------------------------
 
-    def delete_task(self, task_id: UUID) -> None:
-        """Запрос на удаление задачи."""
-        self._dispatch_async(self._execute_delete, task_id, success_msg="Задача удалена")
+    async def create_task(
+            self,
+            schema: TaskCreateSchema,
+    ) -> TaskReadSchema:
+        """Создать новую задачу планирования.
 
-    # --- Вспомогательные методы для кэша и маппинга ---
-    def get_cached_task(self, task_id: UUID) -> Optional[TaskReadSchema]:
-        """Возвращает задачу из кэша без обращения к БД."""
-        for task in self._cache:
-            if task.id == task_id:
-                return task
-        return None
+        Проверяет уникальность названия перед созданием.
 
-    def _update_cache(self, tasks: List[PlanningTask]) -> None:
-        """Обновляет локальный кэш DTO."""
-        self._cache = [self._map_to_schema(t) for t in tasks]
+        Args:
+            schema: Схема создания задачи (:class:`TaskCreateSchema`).
 
-    @staticmethod
-    def _map_to_schema(domain: PlanningTask) -> TaskReadSchema:
-        """Конвертирует доменную модель в DTO для Presentation."""
-        return TaskReadSchema(
-            id=domain.id,
-            name=domain.name,
-            period_type=domain.period_type.value,
-            period_start=domain.period_start,
-            period_end=domain.period_end,
-            reference_id=domain.reference_id,
-            created_at=domain.created_at,
-            updated_at=domain.updated_at,
+        Returns:
+            Созданная задача в виде :class:`TaskReadSchema`.
+
+        Raises:
+            DuplicateTaskNameError: Задача с таким названием уже существует.
+            TaskDomainError: Ошибка валидации Domain-модели.
+            SQLAlchemyError: Ошибка при работе с БД.
+        """
+        log_user_action(
+            self._logger,
+            "Создание задачи",
+            f"Имя: {schema.name}, Период: {schema.period_type.value}",
+        )
+        self._logger.debug(
+            "TaskController: создание задачи из схемы: %s",
+            schema.model_dump(),
         )
 
-    # --- Асинхронные операции (выполняются в фоне) ---
-    async def _execute_load_all(self) -> List[PlanningTask]:
-        tasks = await self._repo.get_all()
-        self._update_cache(tasks)
-        return tasks
+        try:
+            # Проверка уникальности названия
+            if await self._repository.exists_by_name(schema.name):
+                raise DuplicateTaskNameError(schema.name)
 
-    async def _execute_create(self, schema: TaskCreateSchema) -> None:
-        domain_task = PlanningTask(
-            name=schema.name,
-            period_type=schema.period_type,
-            period_start=schema.period_start,
-            period_end=schema.period_end,
-            reference_id=schema.reference_id,
+            # Преобразование Schema → Domain
+            # period_start и period_end НЕ передаются — они рассчитываются
+            # автоматически в PlanningTask._calculate_period_bounds
+            task = PlanningTask(
+                name=schema.name,
+                period_type=schema.period_type,
+                anchor_date=schema.anchor_date,
+                employee_ids=schema.employee_ids or [],
+                duty_type_ids=schema.duty_type_ids or [],
+                reference_id=schema.reference_id,
+            )
+
+            # Вызов репозитория
+            created_task = await self._repository.create(task)
+
+            # Преобразование Domain → DTO
+            result = TaskReadSchema.model_validate(created_task)
+
+            log_user_action(
+                self._logger,
+                "Задача создана",
+                f"ID: {result.id}, Имя: {result.name}",
+            )
+            self._logger.debug(
+                "TaskController: задача успешно создана: %s",
+                result.id,
+            )
+            return result
+
+        except DuplicateTaskNameError:
+            raise
+        except TaskDomainError as exc:
+            self._logger.warning(
+                "TaskController: ошибка валидации Domain: %s",
+                exc,
+            )
+            log_user_error(
+                self._logger,
+                "Создание задачи",
+                f"Ошибка валидации: {exc}",
+            )
+            raise
+        except SQLAlchemyError as exc:
+            log_user_error(
+                self._logger,
+                "Создание задачи",
+                f"Ошибка БД: {exc}",
+            )
+            raise
+        except Exception as exc:
+            self._logger.error(
+                "TaskController: непредвиденная ошибка при создании задачи: %s",
+                exc,
+                exc_info=True,
+            )
+            log_user_error(
+                self._logger,
+                "Создание задачи",
+                f"Непредвиденная ошибка: {exc}",
+            )
+            raise
+
+    # ------------------------------------------------------------------
+    # Update operation
+    # ------------------------------------------------------------------
+    async def update_task(
+        self,
+        task_id: UUID,
+        schema: TaskUpdateSchema,
+    ) -> TaskReadSchema:
+        """Обновить существующую задачу планирования.
+
+        Проверяет уникальность названия (если оно изменяется).
+
+        Args:
+            task_id: UUID задачи для обновления.
+            schema: Схема обновления (:class:`TaskUpdateSchema`, все поля опциональны).
+
+        Returns:
+            Обновлённая задача в виде :class:`TaskReadSchema`.
+
+        Raises:
+            DuplicateTaskNameError: Задача с новым названием уже существует.
+            TaskDomainError: Ошибка валидации Domain-модели.
+            SQLAlchemyError: Ошибка при работе с БД.
+        """
+        log_user_action(
+            self._logger,
+            "Обновление задачи",
+            f"ID: {task_id}, Изменения: {schema.model_dump(exclude_unset=True)}",
         )
-        await self._repo.create(domain_task)
-
-    async def _execute_update(self, schema: TaskUpdateSchema) -> None:
-        cached = self.get_cached_task(schema.id)
-        if not cached:
-            raise TaskDomainError("Задача не найдена в кэше или уже удалена.")
-
-        # Создаём обновлённый экземпляр, сохраняя системные поля
-        domain_task = PlanningTask(
-            id=schema.id,
-            name=schema.name or cached.name,
-            period_type=schema.period_type or cached.period_type,
-            period_start=schema.period_start or cached.period_start,
-            period_end=schema.period_end or cached.period_end,
-            reference_id=schema.reference_id,
-            created_at=cached.created_at,
-            updated_at=cached.updated_at,
+        self._logger.debug(
+            "TaskController: обновление задачи ID=%s, схема: %s",
+            task_id,
+            schema.model_dump(exclude_unset=True),
         )
-        await self._repo.update(domain_task)
 
-    async def _execute_delete(self, task_id: UUID) -> None:
-        await self._repo.delete(task_id)
+        try:
+            # Получение существующей задачи
+            existing_task = await self._repository.get_by_id(task_id)
+            if existing_task is None:
+                error_msg = f"Задача с ID={task_id} не найдена"
+                self._logger.warning("TaskController: %s", error_msg)
+                log_user_error(self._logger, "Обновление задачи", error_msg)
+                raise ValueError(error_msg)
 
-    # --- Диспетчер фоновых задач ---
-    def _dispatch_async(self, coro_func, *args, success_msg: str = "Готово") -> None:
-        """Запускает асинхронную функцию в изолированном потоке и эмитит Qt-сигналы."""
+            # Применение изменений (только переданные поля)
+            update_data = schema.model_dump(exclude_unset=True)
 
-        def runner():
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                result = loop.run_until_complete(coro_func(*args))
-                loop.close()
+            # Проверка уникальности названия (если оно изменяется)
+            if "name" in update_data and update_data["name"] != existing_task.name:
+                if await self._repository.exists_by_name(
+                    update_data["name"],
+                    exclude_id=task_id,
+                ):
+                    raise DuplicateTaskNameError(update_data["name"])
 
-                if coro_func == self._execute_load_all:
-                    schemas = [self._map_to_schema(t) for t in result]
-                    self.tasks_loaded.emit(schemas)
+            updated_task = existing_task.model_copy(update=update_data)
 
-                self.operation_succeeded.emit(success_msg)
-                self._logger.info(success_msg)
-            except TaskDomainError as e:
-                self._logger.warning(f"Domain error in controller: {e}")
-                self.operation_failed.emit(str(e))
-            except Exception as e:
-                self._logger.exception("Unexpected error in async dispatch")
-                self.operation_failed.emit(f"Внутренняя ошибка: {e}")
+            # Вызов репозитория
+            saved_task = await self._repository.update(updated_task)
 
-        threading.Thread(target=runner, daemon=True).start()
+            # Преобразование Domain → DTO
+            result = TaskReadSchema.model_validate(saved_task)
+
+            log_user_action(
+                self._logger,
+                "Задача обновлена",
+                f"ID: {result.id}, Имя: {result.name}",
+            )
+            self._logger.debug(
+                "TaskController: задача успешно обновлена: %s",
+                result.id,
+            )
+            return result
+
+        except DuplicateTaskNameError:
+            raise  # Пробрасываем без дополнительного логирования
+        except TaskDomainError as exc:
+            self._logger.warning(
+                "TaskController: ошибка валидации Domain: %s",
+                exc,
+            )
+            log_user_error(
+                self._logger,
+                "Обновление задачи",
+                f"ID={task_id}, Ошибка валидации: {exc}",
+            )
+            raise
+        except SQLAlchemyError as exc:
+            log_user_error(
+                self._logger,
+                "Обновление задачи",
+                f"ID={task_id}, Ошибка БД: {exc}",
+            )
+            raise
+        except Exception as exc:
+            self._logger.error(
+                "TaskController: непредвиденная ошибка при обновлении задачи: %s",
+                exc,
+                exc_info=True,
+            )
+            log_user_error(
+                self._logger,
+                "Обновление задачи",
+                f"ID={task_id}, Непредвиденная ошибка: {exc}",
+            )
+            raise
+
+    # ------------------------------------------------------------------
+    # Delete operation
+    # ------------------------------------------------------------------
+    async def delete_task(self, task_id: UUID) -> None:
+        """Удалить задачу планирования."""
+        log_user_action(
+            self._logger,
+            "Удаление задачи",
+            f"ID: {task_id}",
+        )
+        self._logger.debug(
+            "TaskController: удаление задачи ID=%s",
+            task_id,
+        )
+
+        try:
+            await self._repository.delete(task_id)
+            log_user_action(
+                self._logger,
+                "Задача удалена",
+                f"ID: {task_id}",
+            )
+            self._logger.debug(
+                "TaskController: задача успешно удалена: %s",
+                task_id,
+            )
+        except SQLAlchemyError as exc:
+            log_user_error(
+                self._logger,
+                "Удаление задачи",
+                f"ID={task_id}, Ошибка БД: {exc}",
+            )
+            raise
+        except Exception as exc:
+            self._logger.error(
+                "TaskController: непредвиденная ошибка при удалении задачи: %s",
+                exc,
+                exc_info=True,
+            )
+            log_user_error(
+                self._logger,
+                "Удаление задачи",
+                f"ID={task_id}, Непредвиденная ошибка: {exc}",
+            )
+            raise

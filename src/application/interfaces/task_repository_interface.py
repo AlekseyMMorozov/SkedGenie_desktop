@@ -1,7 +1,14 @@
 # src/application/interfaces/task_repository_interface.py
+"""
+Интерфейс репозитория для работы с задачами планирования.
 
-"""Абстрактный интерфейс репозитория для работы с задачами планирования."""
+Определяет контракт для CRUD-операций над :class:`PlanningTask`,
+который должен быть реализован в Infrastructure-слое (например,
+:class:`TaskSQLAlchemyRepository`).
 
+Application-слой зависит только от этого интерфейса, не от конкретной
+реализации (принцип инверсии зависимостей).
+"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -11,34 +18,75 @@ from src.domain.tasks.planning_task_model import PlanningTask
 
 
 class ITaskRepository(ABC):
-    """Контракт слоя репозитория для доменной сущности PlanningTask.
+    """Абстрактный интерфейс репозитория задач планирования.
 
-    Определяет асинхронные операции CRUD, работающие исключительно
-    с Pydantic-моделями. Позволяет заменять инфраструктуру хранения
-    без изменения бизнес-логики и сервисного слоя.
+    Все методы асинхронные для поддержки неблокирующих операций с БД.
     """
 
     @abstractmethod
     async def get_by_id(self, task_id: UUID) -> PlanningTask | None:
-        """Получить задачу планирования по уникальному идентификатору."""
-        pass
+        """Получить задачу по ID.
+
+        Args:
+            task_id: UUID задачи.
+
+        Returns:
+            :class:`PlanningTask` или ``None``, если не найдена.
+        """
+        ...
 
     @abstractmethod
     async def get_all(self) -> list[PlanningTask]:
-        """Получить отсортированный список всех задач планирования."""
-        pass
+        """Получить список всех задач планирования.
+
+        Returns:
+            Список :class:`PlanningTask` (может быть пустым).
+        """
+        ...
+
+    @abstractmethod
+    async def exists_by_name(self, name: str, exclude_id: UUID | None = None) -> bool:
+        """Проверить существование задачи с указанным названием.
+
+        Args:
+            name: Название задачи для проверки.
+            exclude_id: UUID задачи, которую нужно исключить из проверки
+                (используется при обновлении, чтобы задача не конфликтовала сама с собой).
+
+        Returns:
+            ``True``, если задача с таким названием существует, иначе ``False``.
+        """
+        ...
 
     @abstractmethod
     async def create(self, task: PlanningTask) -> PlanningTask:
-        """Сохранить новую задачу в хранилище и вернуть сохранённую версию."""
-        pass
+        """Создать новую задачу планирования.
+
+        Args:
+            task: Domain-объект задачи.
+
+        Returns:
+            Созданная задача с присвоенным ID.
+        """
+        ...
 
     @abstractmethod
     async def update(self, task: PlanningTask) -> PlanningTask:
-        """Обновить существующую задачу в хранилище и вернуть результат."""
-        pass
+        """Обновить существующую задачу планирования.
+
+        Args:
+            task: Domain-объект задачи с обновлёнными данными.
+
+        Returns:
+            Обновлённая задача.
+        """
+        ...
 
     @abstractmethod
     async def delete(self, task_id: UUID) -> None:
-        """Удалить задачу планирования по идентификатору."""
-        pass
+        """Удалить задачу планирования по ID.
+
+        Args:
+            task_id: UUID задачи для удаления.
+        """
+        ...
