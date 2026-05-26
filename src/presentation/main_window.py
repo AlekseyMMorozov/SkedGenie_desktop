@@ -2,24 +2,23 @@
 """
 Главное окно приложения SkedGenie.
 
-Предоставляет основной интерфейс пользователя с:
-    - Меню верхнего уровня (Файл/Правка/Вид/Сервис/Справка) — нативный tk.Menu.
-    - Левой навигационной панелью :class:`NavigationSidebar` с 5 разделами
-      (Задачи / Графики / Сотрудники / Задействования / Настройки).
-    - Контент-областью справа с переключаемыми страницами (white-card layout).
-    - Сворачиваемой панелью логов :class:`LogPanel`.
-    - Статус-баром с текущим состоянием и версией.
-    - Горячими клавишами (Ctrl+Q для выхода, F5 для обновления).
-    - Graceful shutdown через ``protocol("WM_DELETE_WINDOW")``.
-    - Централизованным управлением шрифтами через :class:`FontManager`.
+Тонкий фасад, ответственный за:
+    - Создание Tk-корня и настройку окна (заголовок, размер, позиция).
+    - Инициализацию FontManager (требует Tk-корень).
+    - Композицию компонентов: MainMenu, NavigationSidebar, PageFactory, LogPanel.
+    - Переключение страниц контент-области.
+    - Привязку горячих клавиш и обработчиков меню.
+    - Graceful shutdown при закрытии.
+
+Делегирование:
+    - Построение структуры меню → :class:`MainMenu`.
+    - Создание страниц контента → :class:`PageFactory`.
+    - Асинхронные операции → :class:`AsyncBridge`.
+    - Бизнес-логика → :class:`TaskController` / :class:`EmployeeController`.
 
 Цветовая схема (Material Design 3 / Fluent Light):
     - Фон окна: ``#F3F3F3`` (светло-серый).
     - Фон контент-области: ``#FFFFFF`` (белая карточка с закруглёнными углами).
-    - Фон сайдбара: определяется автоматически по теме CustomTkinter.
-
-Все асинхронные операции выполняются через :class:`AsyncBridge`,
-бизнес-логика — через :class:`TaskController`.
 """
 from __future__ import annotations
 
@@ -28,10 +27,14 @@ from tkinter import messagebox
 from typing import Optional
 
 import customtkinter as ctk
-import tkinter as tk
 
-from src.core.logging_config import log_ui_event, log_user_action
+from src.core.logging_config import (
+    get_ctk_handler,
+    log_ui_event,
+    log_user_action,
+)
 from src.presentation.async_bridge import AsyncBridge
+from src.presentation.controllers.employee_controller import EmployeeController
 from src.presentation.controllers.task_controller import TaskController
 from src.presentation.font_manager import (
     FontManager,
@@ -40,8 +43,11 @@ from src.presentation.font_manager import (
     set_font_manager,
 )
 from src.presentation.settings import Settings
+from src.presentation.widgets.employee_list_widget import EmployeeListWidget
 from src.presentation.widgets.log_panel import LogPanel
+from src.presentation.widgets.main_menu import MainMenu
 from src.presentation.widgets.navigation_sidebar import NavigationSidebar
+from src.presentation.widgets.page_factory import PageFactory
 from src.presentation.widgets.task_list_widget import TaskListWidget
 
 
@@ -59,17 +65,9 @@ _CONTENT_CARD_COLORS: dict[str, str] = {
 class MainWindow(ctk.CTk):
     """Главное окно приложения SkedGenie.
 
-    Attributes:
-        _task_controller: Контроллер задач (фасад над репозиторием).
-        _bridge: Мост для вызова async-методов (создаётся внутри окна).
-        _font_manager: Менеджер шрифтов (создаётся внутри окна).
-        _logger: Логгер для событий окна.
-        _settings: Менеджер настроек (для будущего диалога настроек).
-        _sidebar: Навигационная панель слева.
-        _pages: Словарь ``section_id → CTkFrame`` для переключения контента.
-        _active_section: ID текущего активного раздела.
-        _content_card: Белая карточка-контейнер для страниц.
-        _task_list_widget: Виджет задач (живёт внутри страницы tasks).
+    Тонкий фасад, координирующий работу компонентов UI.
+    Не содержит бизнес-логики и не создаёт сложных структур —
+    делегирует эти задачи MainMenu, PageFactory и контроллерам.
     """
 
     _WINDOW_TITLE: str = "SkedGenie — Планировщик смен и нарядов"
@@ -77,21 +75,21 @@ class MainWindow(ctk.CTk):
     _MIN_SIZE: tuple[int, int] = (900, 600)
     _APP_VERSION: str = "v0.1.0"
 
-    _CONTENT_PADDING: int = 15
     _CARD_CORNER_RADIUS: int = 10
 
-    # ID разделов должны совпадать с NavigationSidebar._SECTIONS.
-    _SECTION_TASKS: str = "tasks"
-    _SECTION_GRAPHS: str = "graphs"
-    _SECTION_EMPLOYEES: str = "employees"
-    _SECTION_ENGAGEMENTS: str = "engagements"
-    _SECTION_SETTINGS: str = "settings"
+    # ID разделов — должны совпадать с PageFactory.SECTION_* и NavigationSidebar._SECTIONS.
+    _SECTION_TASKS: str = PageFactory.SECTION_TASKS
+    _SECTION_GRAPHS: str = PageFactory.SECTION_GRAPHS
+    _SECTION_EMPLOYEES: str = PageFactory.SECTION_EMPLOYEES
+    _SECTION_ENGAGEMENTS: str = PageFactory.SECTION_ENGAGEMENTS
+    _SECTION_SETTINGS: str = PageFactory.SECTION_SETTINGS
 
     def __init__(
         self,
         task_controller: TaskController,
         logger: logging.Logger,
         settings: Optional[Settings] = None,
+        employee_controller: Optional[EmployeeController] = None,
         **kwargs,
     ) -> None:
         """Инициализация главного окна.
@@ -100,6 +98,8 @@ class MainWindow(ctk.CTk):
             task_controller: Контроллер задач.
             logger: Логгер для событий окна.
             settings: Менеджер настроек (для будущего диалога настроек).
+            employee_controller: Контроллер сотрудников.
+                Если None — страница «Сотрудники» останется заглушкой.
             **kwargs: Дополнительные параметры для ``CTk``.
         """
         # super().__init__() создаёт Tk-корень — это ОБЯЗАТЕЛЬНО должно
@@ -109,18 +109,28 @@ class MainWindow(ctk.CTk):
         self._logger = logger
         self._settings = settings
         self._task_controller = task_controller
+        self._employee_controller = employee_controller
 
-        # Создание объектов, требующих Tk-корень.
+        # Объекты, требующие Tk-корень.
         self._bridge = AsyncBridge(self, logger)
         self._font_manager = self._init_font_manager()
 
+        # Ссылки на виджеты (заполняются PageFactory).
         self._pages: dict[str, ctk.CTkFrame] = {}
+        self._task_list_widget: Optional[TaskListWidget] = None
+        self._employee_list_widget: Optional[EmployeeListWidget] = None
         self._active_section: str = self._SECTION_TASKS
 
+        # Компоненты верхнего уровня.
+        self._menu: Optional[MainMenu] = None
+        self._sidebar: Optional[NavigationSidebar] = None
+        self._content_card: Optional[ctk.CTkFrame] = None
+        self._log_panel: Optional[LogPanel] = None
+
+        # Сборка окна.
         self._setup_window()
         self._create_menu()
         self._create_log_panel()
-        self._create_status_bar()
         self._create_main_layout()
         self._bind_hotkeys()
         self._setup_closing_handler()
@@ -142,11 +152,7 @@ class MainWindow(ctk.CTk):
         Читает размер шрифта из settings (если передан), иначе использует
         ``FontSize.MEDIUM``. Регистрирует экземпляр как глобальный синглтон
         через :func:`set_font_manager`.
-
-        Returns:
-            Созданный экземпляр :class:`FontManager`.
         """
-        # Определяем базовый размер из настроек.
         if self._settings is not None:
             try:
                 base_size = self._settings.get_current().font_size
@@ -179,11 +185,9 @@ class MainWindow(ctk.CTk):
         self.geometry(self._WINDOW_SIZE)
         self.minsize(*self._MIN_SIZE)
 
-        # Фон окна в зависимости от текущей темы.
         window_bg = self._get_theme_color(_WINDOW_BG_COLORS, default="#F3F3F3")
         self.configure(fg_color=window_bg)
 
-        # Центрирование на экране.
         self.update_idletasks()
         width = self.winfo_width()
         height = self.winfo_height()
@@ -194,57 +198,30 @@ class MainWindow(ctk.CTk):
         self.geometry(f"{width}x{height}+{x}+{y}")
 
     def _create_menu(self) -> None:
-        """Создание меню верхнего уровня (стандартный tkinter.Menu)."""
-        menubar = tk.Menu(self)
-        self.configure(menu=menubar)
-
-        file_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Файл", menu=file_menu)
-        file_menu.add_command(
-            label="Выход", command=self._on_exit, accelerator="Ctrl+Q",
+        """Создать главное меню через MainMenu (делегирование)."""
+        self._menu = MainMenu(
+            root=self,
+            logger=self._logger,
+            on_exit=self._on_exit,
+            on_undo=self._on_undo_stub,
+            on_redo=self._on_redo_stub,
+            on_refresh=self._on_refresh,
+            on_clear_logs=self._on_clear_logs,
+            on_settings=self._on_settings_stub,
+            on_import=self._on_import_stub,
+            on_export=self._on_export_stub,
+            on_about=self._on_about,
         )
-
-        edit_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Правка", menu=edit_menu)
-        edit_menu.add_command(
-            label="Отменить", command=self._on_undo_stub, accelerator="Ctrl+Z",
-        )
-        edit_menu.add_command(
-            label="Повторить", command=self._on_redo_stub, accelerator="Ctrl+Y",
-        )
-
-        view_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Вид", menu=view_menu)
-        view_menu.add_command(
-            label="Обновить", command=self._on_refresh, accelerator="F5",
-        )
-        view_menu.add_separator()
-        view_menu.add_command(
-            label="Очистить логи", command=self._on_clear_logs,
-        )
-
-        tools_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Сервис", menu=tools_menu)
-        tools_menu.add_command(
-            label="Настройки", command=self._on_settings_stub,
-        )
-        tools_menu.add_separator()
-        tools_menu.add_command(label="Импорт", command=self._on_import_stub)
-        tools_menu.add_command(label="Экспорт", command=self._on_export_stub)
-
-        help_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Справка", menu=help_menu)
-        help_menu.add_command(label="О программе", command=self._on_about)
-
-        self._logger.debug("MainWindow: меню верхнего уровня создано")
+        self.configure(menu=self._menu.menu)
+        self._logger.debug("MainWindow: меню создано через MainMenu")
 
     def _create_main_layout(self) -> None:
         """Создание основной раскладки: сайдбар + контент-область."""
-        self._main_container = ctk.CTkFrame(self, fg_color="transparent")
-        self._main_container.pack(fill="both", expand=True)
+        main_container = ctk.CTkFrame(self, fg_color="transparent")
+        main_container.pack(fill="both", expand=True)
 
         self._sidebar = NavigationSidebar(
-            master=self._main_container,
+            master=main_container,
             logger=self._logger,
             on_select=self._on_section_select,
             initial_section=self._SECTION_TASKS,
@@ -253,14 +230,14 @@ class MainWindow(ctk.CTk):
             side="left",
             fill="y",
             padx=(10, 0),
-            pady=(10, 10),
+            pady=10,
         )
 
         card_color = self._get_theme_color(
             _CONTENT_CARD_COLORS, default="#FFFFFF",
         )
         self._content_card = ctk.CTkFrame(
-            self._main_container,
+            main_container,
             fg_color=card_color,
             corner_radius=self._CARD_CORNER_RADIUS,
         )
@@ -272,133 +249,27 @@ class MainWindow(ctk.CTk):
             pady=10,
         )
 
-        self._create_pages()
-
-        self._logger.debug("MainWindow: сайдбар + контент-область созданы")
-
-    def _create_pages(self) -> None:
-        """Создание фреймов-страниц для каждого раздела."""
-        fm = get_font_manager()
-        title_font = fm.get_font("title") if fm else ctk.CTkFont(
-            size=20, weight="bold",
-        )
-        subtitle_font = fm.get_font("subtitle") if fm else ctk.CTkFont(size=16)
-
-        # --- Страница "Задачи" ---
-        tasks_page = ctk.CTkFrame(self._content_card, fg_color="transparent")
-        tasks_page.pack_propagate(False)
-
-        tasks_header = ctk.CTkLabel(
-            tasks_page,
-            text="Задачи планирования",
-            font=title_font,
-            anchor="w",
-        )
-        tasks_header.pack(
-            fill="x",
-            padx=self._CONTENT_PADDING,
-            pady=(self._CONTENT_PADDING, 5),
-        )
-        if fm:
-            fm.register_widget(tasks_header, "title")
-
-        self._task_list_widget = TaskListWidget(
-            master=tasks_page,
-            controller=self._task_controller,
+        # Делегирование создания страниц фабрике.
+        page_factory = PageFactory(
+            content_card=self._content_card,
+            task_controller=self._task_controller,
+            employee_controller=self._employee_controller,
             bridge=self._bridge,
             logger=self._logger,
         )
-        self._task_list_widget.pack(
-            fill="both",
-            expand=True,
-            padx=self._CONTENT_PADDING,
-            pady=(0, self._CONTENT_PADDING),
-        )
-        self._pages[self._SECTION_TASKS] = tasks_page
-
-        # --- Страница "Графики" (заглушка) ---
-        graphs_page = self._create_stub_page(
-            title="Графики",
-            message="Модуль 'Графики' находится в разработке",
-            title_font=title_font,
-            subtitle_font=subtitle_font,
-            fm=fm,
-        )
-        self._pages[self._SECTION_GRAPHS] = graphs_page
-
-        # --- Страница "Сотрудники" (заглушка) ---
-        employees_page = self._create_stub_page(
-            title="Сотрудники",
-            message="Модуль 'Сотрудники' находится в разработке",
-            title_font=title_font,
-            subtitle_font=subtitle_font,
-            fm=fm,
-        )
-        self._pages[self._SECTION_EMPLOYEES] = employees_page
-
-        # --- Страница "Задействования" (заглушка) ---
-        engagements_page = self._create_stub_page(
-            title="Задействования",
-            message="Модуль 'Задействования' находится в разработке",
-            title_font=title_font,
-            subtitle_font=subtitle_font,
-            fm=fm,
-        )
-        self._pages[self._SECTION_ENGAGEMENTS] = engagements_page
-
-        # --- Страница "Настройки" (заглушка) ---
-        settings_page = self._create_stub_page(
-            title="Настройки",
-            message="Модуль 'Настройки' находится в разработке",
-            title_font=title_font,
-            subtitle_font=subtitle_font,
-            fm=fm,
-        )
-        self._pages[self._SECTION_SETTINGS] = settings_page
-
-        self._logger.debug(
-            "MainWindow: создано %d страниц контента",
-            len(self._pages),
+        self._pages, self._task_list_widget, self._employee_list_widget = (
+            page_factory.create_all_pages()
         )
 
-    def _create_stub_page(
-        self,
-        title: str,
-        message: str,
-        title_font: ctk.CTkFont,
-        subtitle_font: ctk.CTkFont,
-        fm,
-    ) -> ctk.CTkFrame:
-        """Создать страницу-заглушку с заголовком и сообщением."""
-        page = ctk.CTkFrame(self._content_card, fg_color="transparent")
-
-        header = ctk.CTkLabel(
-            page,
-            text=title,
-            font=title_font,
-            anchor="w",
-        )
-        header.pack(
-            fill="x",
-            padx=self._CONTENT_PADDING,
-            pady=(self._CONTENT_PADDING, 5),
-        )
-        if fm:
-            fm.register_widget(header, "title")
-
-        stub_label = ctk.CTkLabel(
-            page,
-            text=message,
-            font=subtitle_font,
-        )
-        stub_label.pack(expand=True)
-        if fm:
-            fm.register_widget(stub_label, "subtitle")
-
-        return page
+        self._logger.debug("MainWindow: сайдбар + контент-область + страницы созданы")
 
     def _create_log_panel(self) -> None:
-        """Создание сворачиваемой панели логов."""
+        """Создание сворачиваемой панели логов.
+
+        Примечание: подключение панели к ``CTkLogHandler`` выполняется
+        отдельно через :meth:`attach_log_handler` после того, как
+        ``main.py`` вызовет :func:`attach_gui_handler`.
+        """
         self._log_panel = LogPanel(
             master=self,
             logger=self._logger,
@@ -407,36 +278,31 @@ class MainWindow(ctk.CTk):
             fill="x",
             side="bottom",
             padx=10,
-            pady=(0, 5),
+            pady=(0, 10),
         )
-        self._log_panel.attach_handler()
-        self._logger.debug("MainWindow: панель логов создана и подключена")
+        self._logger.debug(
+            "MainWindow: панель логов создана (handler будет прикреплён позже)",
+        )
 
-    def _create_status_bar(self) -> None:
-        """Создание статус-бара внизу окна с типографической ролью 'caption'."""
-        fm = get_font_manager()
-        caption_font = fm.get_font("caption") if fm else None
+    def attach_log_handler(self) -> None:
+        """Прикрепить ``CTkLogHandler`` к панели логов.
 
-        status_frame = ctk.CTkFrame(self, height=25, fg_color="transparent")
-        status_frame.pack(fill="x", side="bottom", padx=10, pady=(0, 5))
+        Должен вызываться в ``main.py`` **после** :func:`attach_gui_handler`,
+        чтобы :func:`get_ctk_handler` вернул существующий handler.
+        """
+        handler = get_ctk_handler()
+        if handler is None:
+            self._logger.warning(
+                "MainWindow: CTkLogHandler не найден при attach_log_handler(), "
+                "панель логов останется пустой",
+            )
+            return
 
-        status_kwargs = {"text": "Готов", "anchor": "w"}
-        if caption_font:
-            status_kwargs["font"] = caption_font
-        self._status_label = ctk.CTkLabel(status_frame, **status_kwargs)
-        self._status_label.pack(side="left", padx=(5, 0))
-        if fm:
-            fm.register_widget(self._status_label, "caption")
-
-        version_kwargs = {"text": self._APP_VERSION, "anchor": "e"}
-        if caption_font:
-            version_kwargs["font"] = caption_font
-        version_label = ctk.CTkLabel(status_frame, **version_kwargs)
-        version_label.pack(side="right", padx=(0, 5))
-        if fm:
-            fm.register_widget(version_label, "caption")
-
-        self._logger.debug("MainWindow: статус-бар создан")
+        if self._log_panel is not None:
+            self._log_panel.attach_handler()
+        self._logger.info(
+            "MainWindow: CTkLogHandler успешно прикреплён к панели логов",
+        )
 
     def _bind_hotkeys(self) -> None:
         """Привязка горячих клавиш."""
@@ -492,10 +358,11 @@ class MainWindow(ctk.CTk):
         )
 
     # ------------------------------------------------------------------
-    # Menu handlers
+    # Menu handlers (бизнес-логика действий меню остаётся здесь,
+    # т.к. требует доступа к состоянию MainWindow)
     # ------------------------------------------------------------------
     def _on_exit(self) -> None:
-        """Обработчик меню 'Файл → Выход'."""
+        """Обработчик 'Файл → Выход'."""
         log_ui_event(self._logger, "MainWindow.menu_file_exit", "click")
         self._on_closing()
 
@@ -518,19 +385,30 @@ class MainWindow(ctk.CTk):
         )
 
     def _on_refresh(self) -> None:
-        """Обработчик меню 'Вид → Обновить'."""
+        """Обработчик 'Вид → Обновить'.
+
+        Обновляет данные во всех существующих list-виджетах.
+        Операция быстрая, безопасная для параллельного выполнения.
+        """
         log_ui_event(self._logger, "MainWindow.menu_view_refresh", "click")
-        self._task_list_widget.refresh()
+
+        if self._task_list_widget is not None:
+            self._task_list_widget.refresh()
+
+        if self._employee_list_widget is not None:
+            self._employee_list_widget.refresh()
 
     def _on_clear_logs(self) -> None:
-        """Обработчик меню 'Вид → Очистить логи'."""
+        """Обработчик 'Вид → Очистить логи'."""
         log_ui_event(self._logger, "MainWindow.menu_view_clear_logs", "click")
-        self._log_panel.clear_logs()
+        if self._log_panel is not None:
+            self._log_panel.clear_logs()
 
     def _on_settings_stub(self) -> None:
-        """Заглушка: 'Сервис → Настройки' — переключение на страницу настроек."""
+        """'Сервис → Настройки' — переключение на страницу настроек."""
         log_ui_event(self._logger, "MainWindow.menu_tools_settings", "click")
-        self._sidebar.set_active(self._SECTION_SETTINGS)
+        if self._sidebar is not None:
+            self._sidebar.set_active(self._SECTION_SETTINGS)
         self._show_page(self._SECTION_SETTINGS)
 
     def _on_import_stub(self) -> None:
@@ -552,7 +430,7 @@ class MainWindow(ctk.CTk):
         )
 
     def _on_about(self) -> None:
-        """Обработчик меню 'Справка → О программе'."""
+        """Обработчик 'Справка → О программе'."""
         log_ui_event(self._logger, "MainWindow.menu_help_about", "click")
         messagebox.showinfo(
             "О программе",
@@ -600,11 +478,20 @@ class MainWindow(ctk.CTk):
 
     def run(self) -> None:
         """Запуск главного цикла событий."""
-        self.after(100, self._initial_load_tasks)
+        self.after(100, self._initial_load)
         self._logger.info("MainWindow: запуск mainloop")
         self.mainloop()
 
-    def _initial_load_tasks(self) -> None:
-        """Первичная загрузка задач из БД при старте приложения."""
-        self._logger.info("MainWindow: первичная загрузка задач из БД")
-        self._task_list_widget.refresh()
+    def _initial_load(self) -> None:
+        """Первичная загрузка данных из БД при старте приложения.
+
+        Загружает задачи и сотрудников, если соответствующие виджеты
+        инициализированы.
+        """
+        self._logger.info("MainWindow: первичная загрузка данных из БД")
+
+        if self._task_list_widget is not None:
+            self._task_list_widget.refresh()
+
+        if self._employee_list_widget is not None:
+            self._employee_list_widget.refresh()

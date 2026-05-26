@@ -9,6 +9,7 @@
     - Инициализацию базы данных (создание таблиц при первом запуске).
     - Создание инфраструктуры (session_factory, repository, controller).
     - Запуск главного окна с DI-компонентами.
+    - Подключение GUI-хэндлера логирования и привязку его к панели логов.
     - Graceful shutdown при закрытии.
 """
 from __future__ import annotations
@@ -20,6 +21,7 @@ from pathlib import Path
 
 import customtkinter as ctk
 
+from src.application.services.employee_link_service import EmployeeLinkService
 from src.core.logging_config import (
     setup_logging,
     get_logger,
@@ -29,7 +31,9 @@ from src.infrastructure.db.async_database_session import (
     init_db,
     get_session_factory,
 )
+from src.infrastructure.repositories.employee_repository import EmployeeSQLAlchemyRepository
 from src.infrastructure.repositories.task_repository import TaskSQLAlchemyRepository
+from src.presentation.controllers.employee_controller import EmployeeController
 from src.presentation.controllers.task_controller import TaskController
 from src.presentation.main_window import MainWindow
 from src.presentation.settings import Settings
@@ -51,7 +55,7 @@ def main() -> None:
         4. Инициализация БД (создание таблиц).
         5. Создание инфраструктуры (session_factory → repository → controller).
         6. Создание главного окна (создаёт AsyncBridge и FontManager внутри).
-        7. Подключение GUI-хэндлера логирования.
+        7. Создание GUI-хэндлера логирования и привязка его к панели логов.
         8. Запуск mainloop.
     """
     # ------------------------------------------------------------------
@@ -92,10 +96,6 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Этап 3: Применение темы CustomTkinter (без FontManager)
     # ------------------------------------------------------------------
-    # ВАЖНО: FontManager создаётся внутри MainWindow, так как CTkFont
-    # требует инициализированный Tk-интерпретатор (default root window).
-    # Здесь применяем только глобальные настройки темы — они работают
-    # без Tk-корня.
     try:
         logger.info("Этап 3: Применение темы CustomTkinter...")
 
@@ -135,21 +135,35 @@ def main() -> None:
         sys.exit(1)
 
     # ------------------------------------------------------------------
-    # Этап 5: Создание инфраструктуры
+    # Этап 5: Создание инфраструктуры (Tasks + Employees)
     # ------------------------------------------------------------------
     try:
         logger.info("Этап 5: Создание инфраструктуры...")
 
+        # --- Общая session_factory ---
         session_factory = get_session_factory(DATABASE_URL)
         logger.debug("session_factory создана")
 
-        repository = TaskSQLAlchemyRepository(session_factory)
-        logger.debug("TaskSQLAlchemyRepository создан")
-
-        task_controller = TaskController(repository, logger)
+        # --- Task-ветка ---
+        task_repository = TaskSQLAlchemyRepository(session_factory)
+        task_controller = TaskController(task_repository, logger)
         logger.debug("TaskController создан")
 
-        logger.info("Инфраструктура успешно создана")
+        # --- Employee-ветка ---
+        employee_repository = EmployeeSQLAlchemyRepository(session_factory)
+        employee_link_service = EmployeeLinkService(
+            employee_repository=employee_repository,
+            task_repository=task_repository,
+            logger=logger,
+        )
+        employee_controller = EmployeeController(
+            employee_repository=employee_repository,
+            link_service=employee_link_service,
+            logger=logger,
+        )
+        logger.debug("EmployeeController создан (с EmployeeLinkService)")
+
+        logger.info("Инфраструктура успешно создана (Tasks + Employees)")
     except Exception as exc:
         logger.critical(
             "Критическая ошибка при создании инфраструктуры: %s",
@@ -166,6 +180,7 @@ def main() -> None:
 
         window = MainWindow(
             task_controller=task_controller,
+            employee_controller=employee_controller,  # передан через **kwargs
             logger=logger,
             settings=settings_manager,
         )
@@ -179,12 +194,17 @@ def main() -> None:
         sys.exit(1)
 
     # ------------------------------------------------------------------
-    # Этап 7: Подключение GUI-хэндлера логирования
+    # Этап 7: Создание GUI-хэндлера и привязка к панели логов
     # ------------------------------------------------------------------
+    # ВАЖНО: порядок вызовов критичен!
+    #   1) attach_gui_handler(window) создаёт CTkLogHandler
+    #   2) window.attach_log_handler() привязывает его к LogPanel
+    # Если поменять местами — панель останется пустой (handler ещё не создан).
     try:
-        logger.debug("Этап 7: Подключение GUI-хэндлера логирования...")
+        logger.debug("Этап 7: Создание GUI-хэндлера и привязка к панели логов...")
         attach_gui_handler(window)
-        logger.info("GUI-хэндлер логирования подключён")
+        window.attach_log_handler()
+        logger.info("GUI-хэндлер логирования создан и привязан к панели")
     except Exception as exc:
         logger.error(
             "Ошибка при подключении GUI-хэндлера (некритично): %s",
