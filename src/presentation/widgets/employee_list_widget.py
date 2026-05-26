@@ -217,33 +217,59 @@ class EmployeeListWidget(ctk.CTkFrame):
             on_error=self._on_refresh_error,
         )
 
+
     def _populate_table(self, employees: list[EmployeeReadSchema]) -> None:
-        """Заполнить таблицу данными сотрудников."""
-        for item in self._tree.get_children():
-            self._tree.delete(item)
+        """Заполнить таблицу данными сотрудников с защитой от гонок инициализации."""
+        # ✅ Защита 1: Виджет уже уничтожен (например, при быстром закрытии окна)
+        if not self.winfo_exists():
+            self._logger.debug("EmployeeListWidget: виджет уничтожён, пропуск обновления")
+            return
 
-        self._employees = employees
+        # ✅ Защита 2: Treeview ещё не создан или удалён
+        if not hasattr(self, '_tree') or self._tree is None:
+            self._logger.debug("EmployeeListWidget: Treeview не инициализирован, пропуск")
+            return
 
-        for idx, emp in enumerate(employees, start=1):
-            status = "Активен" if emp.is_active else "В архиве"
-            self._tree.insert(
-                "",
-                "end",
-                iid=str(emp.id),
-                values=(
-                    idx,
-                    emp.display_name or emp.get_full_name(),
-                    emp.position or "",
-                    status,
-                ),
+        try:
+            # Очистка текущих данных
+            for item in self._tree.get_children():
+                self._tree.delete(item)
+
+            # Сохраняем ссылку на новые данные
+            self._employees = employees
+
+            # Вставка новых записей
+            for idx, emp in enumerate(employees, start=1):
+                status = "Активен" if emp.is_active else "В архиве"
+                self._tree.insert(
+                    "",
+                    "end",
+                    iid=str(emp.id),
+                    values=(
+                        idx,
+                        emp.display_name,
+                        emp.position or "",
+                        status,
+                    ),
+                )
+
+            self._logger.debug(
+                "EmployeeListWidget: таблица обновлена, сотрудников: %d",
+                len(employees),
+            )
+            log_ui_event(
+                self._logger,
+                widget="EmployeeListWidget",
+                event="TABLE_POPULATED",
+                data=f"count={len(employees)}",
+            )
+        except Exception as exc:
+            self._logger.error(
+                "EmployeeListWidget: критическая ошибка при заполнении таблицы: %s",
+                exc,
+                exc_info=True,
             )
 
-        log_ui_event(
-            self._logger,
-            widget="EmployeeListWidget",
-            event="TABLE_POPULATED",
-            data=f"count={len(employees)}",
-        )
 
     def _on_refresh_error(self, exc: Exception) -> None:
         """Обработать ошибку обновления списка."""

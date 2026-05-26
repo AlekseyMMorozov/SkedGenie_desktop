@@ -26,6 +26,15 @@
   - `TaskDomainError`, `InvalidTaskNameError`, `InvalidTaskPeriodError`
   - `EmptyTaskReferenceError`, `DuplicateTaskNameError`
 
+#### Domain (Employees)
+- `src/domain/employees/employee_model.py`:
+  - `Employee` (Pydantic v2, `@model_validator` для `display_name`)
+  - Методы: `get_full_name()`, `toggle_active()`, `with_updated_display_name()`, `clone()`
+- `src/domain/employees/employee_exceptions.py`:
+  - `EmployeeDomainError`, `InvalidEmployeeNameError`
+  - `DuplicateEmployeeError` (с `duplicate_field`, `duplicate_value`)
+  - `EmployeeInUseError` (с `task_count`)
+
 #### Application (Tasks)
 - `src/application/interfaces/task_repository_interface.py` — `ITaskRepository`
 - `src/application/schemas/task_schemas.py`:
@@ -33,12 +42,31 @@
   - `TaskUpdateSchema` (id + опциональные поля)
   - `TaskReadSchema`
 
+#### Application (Employees)
+- `src/application/interfaces/employee_repository_interface.py` — `IEmployeeRepository`
+- `src/application/schemas/employee_schemas.py`:
+  - `EmployeeCreateSchema` (валидация ФИО, email, телефона, tab_number)
+  - `EmployeeUpdateSchema`, `EmployeeReadSchema`
+- `src/application/services/employee_link_service.py` — оркестрация связей сотрудник↔задача:
+  - `EmployeeUsageInfo` (dataclass: employee_id, task_count, exists)
+  - `get_usage_info()`, `get_task_count()` — проверка использования
+  - `remove_from_task()` — точечное удаление из одной задачи
+  - `cascade_remove_from_tasks()` — CASCADE-удаление из всех задач
+- `src/application/services/display_name_resolver.py` — чистая функция разрешения конфликтов однофамильцев:
+  - `resolve_display_names(employees)` — основной API
+  - `_ExpansionState` — мутабельное состояние расширения инициалов
+  - Алгоритм: группировка по фамилии → расширение имени → расширение отчества
+
 #### Infrastructure
 - `src/infrastructure/db/async_database_session.py` — async SQLAlchemy сессии
 - `src/infrastructure/db/models/task_orm_model.py` — `TaskORMModel` (UNIQUE name)
+- `src/infrastructure/db/models/employee_orm_model.py` — `EmployeeORMModel` (UNIQUE email, tab_number)
 - `src/infrastructure/repositories/task_repository.py` — `TaskSQLAlchemyRepository`:
   - Маппинг `anchor_date`↔`reference_date`, `duty_type_ids`↔`engagement_ids`
   - `exists_by_name(name, exclude_id)` для защиты от дубликатов
+- `src/infrastructure/repositories/employee_repository.py` — `EmployeeSQLAlchemyRepository`:
+  - `exists_by_email()`, `exists_by_tab_number()` для проверки уникальности
+  - `get_active_only()` для фильтрации архивных сотрудников
 
 #### Presentation (Tasks + GUI-инфраструктура)
 - `src/presentation/async_bridge.py` — `AsyncBridge` с graceful shutdown:
@@ -54,9 +82,21 @@
 - `src/presentation/controllers/task_controller.py` — `TaskController`:
   - Проверка `exists_by_name` перед созданием/обновлением
   - Логирование через `log_user_action`/`log_user_error`
+- `src/presentation/controllers/employee_controller.py` — `EmployeeController` (тонкий фасад):
+  - Делегирует CRUD операции `IEmployeeRepository`
+  - Делегирует проверку использования `EmployeeLinkService`
+  - Использует `resolve_display_names()` для разрешения конфликтов
 - `src/presentation/dialogs/task_dialog.py` — `TaskDialog` (универсальный):
   - Режимы: создание (task=None) и редактирование (task=TaskReadSchema)
   - Унифицированный коллбэк `on_save(task_id, schema)`
+- `src/presentation/dialogs/employee_dialog.py` — `EmployeeDialog` (создание):
+  - Параметр `prefill_data` для повторного открытия после ошибки
+  - Валидация через `EmployeeCreateSchema` / `EmployeeUpdateSchema`
+- `src/presentation/dialogs/employee_card_dialog.py` — `EmployeeCardDialog` (просмотр/редактирование):
+  - Режимы: `mode="view"` (read-only) и `mode="edit"` (inline редактирование)
+  - Inline переключение через `_switch_mode()` с полной пересборкой UI
+  - Кнопка "Изменить" в view mode → переключает в edit mode
+  - `_collect_editable_data()` — сбор данных из реестра виджетов
 - `src/presentation/widgets/log_panel.py` — `LogPanel` (сворачиваемый)
 - `src/presentation/widgets/navigation_sidebar.py` — `NavigationSidebar`:
   - 5 разделов: tasks/graphs/employees/engagements/settings
@@ -66,136 +106,140 @@
   - Кнопки: Создать/Изменить/Удалить/Обновить, двойной клик → редактирование
   - `_dispatch_save()` → `_execute_create()` / `_execute_update()`
   - Обработка `DuplicateTaskNameError` с `_reopen_edit_dialog()`
-- `src/presentation/main_window.py` — `MainWindow`:
-  - Навигационный сайдбар + контент-область (white-card layout)
-  - 5 страниц (tasks/graphs/employees/engagements/settings)
-  - Нативное `tk.Menu` (Файл/Правка/Вид/Сервис/Справка)
-  - Создание `FontManager` внутри `__init__()` (требует Tk-корень)
+- `src/presentation/widgets/employee_list_widget.py` — `EmployeeListWidget`:
+  - `ttk.Treeview` (№/ФИО/Должность/Статус)
+  - Кнопки: Создать/Просмотреть/Удалить/Архивировать/Обновить
+  - Двойной клик → открытие карточки (view mode)
+  - Делегирование диалогов `EmployeeDialogCoordinator`
+- `src/presentation/widgets/employee_dialog_coordinator.py` — `EmployeeDialogCoordinator`:
+  - `open_create_dialog()` — открытие диалога создания
+  - `open_card_dialog()` — открытие карточки (view mode)
+  - `_dispatch_save()` — диспетчеризация сохранения (создание)
+  - `_on_card_save()` — сохранение из карточки (inline редактирование)
+  - Обработка `DuplicateEmployeeError` с повторным открытием диалога
+- `src/presentation/widgets/employee_card_sections.py` — фабрики секций карточки:
+  - `create_header_section()` — ФИО + статус (всегда read-only)
+  - `create_personal_section()` — дата рождения
+  - `create_contact_section()` — email, телефон
+  - `create_work_section()` — должность, табельный номер
+  - `create_engagement_section()` — допуски (пока read-only)
+  - `create_notes_section()` — заметки
+  - `create_metadata_section()` — created_at, updated_at (всегда read-only)
+  - Параметр `editable: bool` для переключения view/edit
+  - Возврат `tuple[CTkFrame, dict[str, EditableWidget]]` для регистрации виджетов
+- `src/presentation/widgets/main_menu.py` — `MainMenu` (выделено из MainWindow):
+  - Нативное `tk.Menu` с 5 подменю (Файл/Правка/Вид/Сервис/Справка)
+  - Callback-параметры для всех действий меню
+  - `@property menu` для установки в окно
+- `src/presentation/widgets/page_factory.py` — `PageFactory` (выделено из MainWindow):
+  - Константы `SECTION_*` для ID разделов
+  - `create_all_pages()` — создание всех 5 страниц
+  - Возврат `tuple[pages, task_widget, employee_widget]`
+  - Fallback на заглушку при `None` контроллере
+- `src/presentation/main_window.py` — `MainWindow` (тонкий фасад):
+  - Tk-корень и настройка окна
+  - Композиция: `MainMenu`, `NavigationSidebar`, `PageFactory`, `LogPanel`
+  - Переключение страниц через `_show_page()`
+  - Горячие клавиши: Ctrl+Q (выход), F5 (обновить)
   - `attach_log_handler()` для подключения CTkLogHandler
-  - Горячие клавиши Ctrl+Q (выход), F5 (обновить)
-  - Статус-бар **удалён** (не нёс полезной информации)
 - `main.py` — 8-этапная инициализация:
   1. Логирование
   2. Загрузка настроек
   3. Применение темы CTk (без Tk-корня)
   4. Инициализация БД
-  5. Создание инфраструктуры
+  5. Создание инфраструктуры (Tasks + Employees)
   6. Создание MainWindow (создаёт AsyncBridge и FontManager)
   7. `attach_gui_handler` + `window.attach_log_handler()`
   8. Запуск mainloop
 
 ### Архитектурные решения
+
+#### Общие
 - **AsyncBridge**: daemon-поток с asyncio loop на всё время жизни приложения
 - **FontManager**: создаётся внутри MainWindow (CTkFont требует Tk-корень)
-- **TaskDialog**: универсальный, заменяет `CreateTaskDialog` (файл удалён)
 - **Navigation Sidebar** вместо `CTkTabview` (современный паттерн, решает проблему с шириной)
 - **White-card layout**: светло-серый фон окна (#F3F3F3) + белые карточки контента
 
+#### Tasks
+- **TaskDialog**: универсальный, заменяет `CreateTaskDialog` (файл удалён)
+- **Проверка дубликатов**: `exists_by_name()` перед созданием/обновлением
+
+#### Employees
+- **Разделение ответственности**: Domain не знает о других сотрудниках, разрешение конфликтов `display_name` — в Application (`display_name_resolver.py`)
+- **Мягкое удаление через архивацию**: `is_active=False` вместо физического удаления из БД
+- **Полное удаление только с подтверждением**: если сотрудник используется в задачах — показывается количество задач и запрашивается подтверждение CASCADE
+- **Тонкий фасад EmployeeController**: делегирует специфичную логику `EmployeeLinkService` и `resolve_display_names()`
+- **Координатор диалогов**: `EmployeeDialogCoordinator` управляет жизненным циклом `EmployeeDialog` и `EmployeeCardDialog`
+- **Inline редактирование**: `EmployeeCardDialog` поддерживает переключение view↔edit без закрытия диалога
+- **Фабрики секций**: `employee_card_sections.py` возвращает реестр редактируемых виджетов для сбора данных
+
+#### MainWindow (рефакторинг SRP)
+- **Выделение MainMenu**: построение структуры меню вынесено в отдельный компонент
+- **Выделение PageFactory**: создание страниц контента вынесено в отдельный компонент
+- **MainWindow как тонкий фасад**: только Tk-корень, layout, lifecycle, композиция
+
 ## 🎯 Следующая задача
 
-## 🎯 Следующая задача: CRUD над Сотрудниками
+### Опции для выбора
 
-### Форматы отображения имени
-- **Короткий (`display_name`)** — для графиков и таблиц:
-  - С отчеством: `"Фамилия И.О."` (например, "Иванов И.С.")
-  - Без отчества: `"Фамилия И."` (например, "Иванов И.")
-  - Вычисляется автоматически в Domain через `@model_validator`
-  - При конфликтах однофамильцев Application-слой
-    (`EmployeeController.resolve_display_names()`) расширяет инициал
-    имени до различимых первых букв: "Иванов Вик. С." vs "Иванов Вит. С."
-- **Длинный (`get_full_name()`)** — для карточки сотрудника и отчётов:
-  - Полное ФИО: `"Фамилия Имя Отчество"` (например, "Иванов Иван Сергеевич")
-  - Вычисляется методом `Employee.get_full_name()`
+1. **Модуль "Задействования" (Engagements)** — следующая агрегатная сущность:
+   - Domain: `Engagement` (название, описание, цвет)
+   - Many-to-many с `Employee` через `engagement_ids`
+   - UI: таблица задействований, диалог создания/редактирования
+   - Интеграция с `EmployeeCardDialog` (отображение названий вместо UUID)
 
-### Поля Domain-модели `Employee`
-| Поле | Тип | Обязательное | Комментарий |
-|------|-----|:------------:|-------------|
-| `id` | UUID | ✅ | Первичный ключ |
-| `last_name` | str | ✅ | Фамилия (1–100 символов) |
-| `first_name` | str | ✅ | Имя (1–100 символов) |
-| `middle_name` | str \| None | ❌ | Отчество (до 100 символов) |
-| `display_name` | str | ✅ | Вычисляемое, для графика |
-| `position` | str \| None | ❌ | Должность |
-| `tab_number` | str \| None | ❌ | Табельный номер |
-| `email` | str \| None | ❌ | Email |
-| `phone` | str \| None | ❌ | Телефон |
-| `birth_date` | date \| None | ❌ | Дата рождения |
-| `is_active` | bool | ✅ | Статус: Активен / В архиве |
-| `notes` | str \| None | ❌ | Заметки (до 2000 символов) |
-| `engagement_ids` | List[UUID] | ✅ | Допуски к задействованиям (many-to-many) |
-| `created_at` | datetime | ✅ | Дата создания |
-| `updated_at` | datetime \| None | ❌ | Дата обновления |
+2. **Модуль "Графики" (Graphs)** — визуализация планирования:
+   - Domain: `Schedule`, `Shift`, `Assignment`
+   - Gantt-диаграмма или таблица-календарь
+   - Проверка жёстких правил (пересечения, минимальный отдых)
+   - Автоматическое распределение сотрудников
 
-### Ограничения уникальности (Infrastructure)
-- `email` — UNIQUE, если не NULL
-- `tab_number` — UNIQUE, если не NULL
-- Проверка дубликатов в репозитории через `exists_by_email` / `exists_by_tab_number`
+3. **Улучшение Employee-модуля**:
+   - Создать `employee_engagement_link.py` (many-to-many таблица)
+   - Реализовать редактирование `engagement_ids` в `EmployeeCardDialog`
+   - Добавить фильтрацию таблицы (активные/архивные)
+   - Поиск по ФИО/должности
 
-### Связи
-- **Many-to-many с `Engagement`** через `engagement_ids` (реализуется отдельной таблицей в Infrastructure)
-- **Soft-связь с `PlanningTask`** через `PlanningTask.employee_ids` (список UUID)
+4. **Тестирование и стабилизация**:
+   - Написать unit-тесты для критичных компонентов
+   - Провести полное ручное тестирование всех 12 тест-кейсов
+   - Исправить обнаруженные баги
+   - Оптимизировать производительность (если есть проблемы)
 
-### Логика удаления
+5. **Настройки (Settings)**:
+   - Диалог настроек (шрифт, тема, цвет)
+   - Сохранение в `data/settings.json`
+   - Применение настроек без перезапуска
 
-| Контекст | Действие |
-|----------|----------|
-| **Меню "Сотрудники" → Удалить** | CASCADE: удаление из всех `PlanningTask.employee_ids` с предупреждением и подтверждением от пользователя |
-| **Меню "График" → Удалить сотрудника** | Удаление UUID только из конкретной задачи (сотрудник остаётся в БД) |
-| **Меню "Задачи" → Удалить из задачи** | Удаление UUID только из конкретной задачи |
-| **Меню "Задействования" → Лишить допуска** | Удаление engagement_id из `Employee.engagement_ids` |
-| **Архивация** | `is_active = False` — сотрудник не участвует в планировании, но данные сохраняются |
+## 📋 План работ по Сотрудникам (ЗАВЕРШЁН)
 
-### UI: вкладка "Сотрудники"
-- Таблица с колонками: **№ | ФИО (короткий `display_name`) | Должность | Статус**
-- Кнопки: Создать / Изменить / Удалить / Обновить / Архивировать
-- Двойной клик или кнопка "Карточка" → модальное окно с полной информацией:
-  - Полное ФИО, все контактные данные, должность
-  - Табельный номер, дата рождения
-  - Статус и заметки
-  - Список допусков к задействованиям (названия Engagement)
-- Диалог создания/редактирования: универсальный `EmployeeDialog`
-
-### План работ (11 итераций)
-1. ✅ `src/domain/employees/employee_model.py`
-2. ✅ `src/domain/employees/employee_exceptions.py`
-3. `src/application/schemas/employee_schemas.py`
-4. `src/application/interfaces/employee_repository_interface.py`
-5. `src/infrastructure/db/models/employee_orm_model.py`
-6. `src/infrastructure/db/models/employee_engagement_link.py` (many-to-many таблица)
-7. `src/infrastructure/repositories/employee_repository.py`
-8. `src/presentation/controllers/employee_controller.py`
-9. `src/presentation/dialogs/employee_dialog.py`
-10. `src/presentation/dialogs/employee_card_dialog.py` (просмотр полной карточки)
-11. `src/presentation/widgets/employee_list_widget.py`
-12. `src/presentation/main_window.py` — замена заглушки employees
-13. `main.py` — wiring `EmployeeController` + `EmployeeListWidget`
-
-### Архитектурные решения
-- **Разделение ответственности**: Domain не знает о других сотрудниках, разрешение конфликтов `display_name` — в Application
-- **Мягкое удаление через архивацию**: `is_active=False` вместо физического удаления из БД
-- **Полное удаление только с подтверждением**: если сотрудник используется в задачах — показывается список задач и запрашивается подтверждение CASCADE
-
-## 📋 План работ по Сотрудникам (поэтапно, по одному файлу за итерацию)
-
-1. `src/domain/employees/employee_model.py` — Domain модель `Employee`
-2. `src/domain/employees/employee_exceptions.py` — исключения (`EmployeeDomainError`, `DuplicateEmployeeError` и т.п.)
-3. `src/application/schemas/employee_schemas.py` — DTO (`EmployeeCreateSchema`/`EmployeeUpdateSchema`/`EmployeeReadSchema`)
-4. `src/application/interfaces/employee_repository_interface.py` — `IEmployeeRepository`
-5. `src/infrastructure/db/models/employee_orm_model.py` — `EmployeeORMModel`
-6. `src/infrastructure/repositories/employee_repository.py` — `EmployeeSQLAlchemyRepository`
-7. `src/presentation/controllers/employee_controller.py` — `EmployeeController`
-8. `src/presentation/dialogs/employee_dialog.py` — `EmployeeDialog` (универсальный)
-9. `src/presentation/widgets/employee_list_widget.py` — `EmployeeListWidget`
-10. `src/presentation/main_window.py` — замена заглушки страницы employees
-11. `main.py` — wiring `EmployeeController` + `EmployeeListWidget`
+✅ `src/domain/employees/employee_model.py` — Domain модель `Employee`
+✅ `src/domain/employees/employee_exceptions.py` — исключения (`EmployeeDomainError`, `DuplicateEmployeeError` и т.п.)
+✅ `src/application/schemas/employee_schemas.py` — DTO (`EmployeeCreateSchema`/`EmployeeUpdateSchema`/`EmployeeReadSchema`)
+✅ `src/application/interfaces/employee_repository_interface.py` — `IEmployeeRepository`
+✅ `src/infrastructure/db/models/employee_orm_model.py` — `EmployeeORMModel`
+❌ `src/infrastructure/db/models/employee_engagement_link.py` (many-to-many таблица — отложено до модуля Engagements)
+✅ `src/infrastructure/repositories/employee_repository.py` — `EmployeeSQLAlchemyRepository`
+✅ `src/application/services/display_name_resolver.py` — разрешение конфликтов однофамильцев
+✅ `src/application/services/employee_link_service.py` — оркестрация связей сотрудник↔задача
+✅ `src/presentation/controllers/employee_controller.py` — `EmployeeController` (тонкий фасад)
+✅ `src/presentation/dialogs/employee_dialog.py` — `EmployeeDialog` (создание с prefill_data)
+✅ `src/presentation/dialogs/employee_card_dialog.py` — карточка с inline view↔edit
+✅ `src/presentation/widgets/employee_card_sections.py` — фабрики секций карточки
+✅ `src/presentation/widgets/employee_dialog_coordinator.py` — координатор диалогов
+✅ `src/presentation/widgets/employee_list_widget.py` — `EmployeeListWidget`
+✅ `src/presentation/widgets/main_menu.py` — выделено из MainWindow (SRP)
+✅ `src/presentation/widgets/page_factory.py` — выделено из MainWindow (SRP)
+✅ `src/presentation/main_window.py` — утончён до тонкого фасада
+✅ `main.py` — wiring `EmployeeController` + `EmployeeLinkService`
 
 ## 📜 Принятые правила в ходе работы
 
 - **Поэтапная работа:** один файл за итерацию, с подтверждением перед правкой
 - **Ничего не придумывать.** Источники истины: `structure.md` и ответы пользователя
-- **Из всех вариантов всегда выбирать самый надёжный**
+- **Из всех вариантов всегда выбирать самый надёжный и простой**
 - **Всегда использовать обработку исключений с логированием**
-- **Логически разделять код на отдельные файлы**
+- **Логически разделять код на отдельные файлы (SRP), размер файла не больше 300 строк (пример: MainWindow → MainMenu + PageFactory)** 
 - **Архитектура:** Domain не зависит от ORM/UI. Infrastructure зависит от Application
 - **Стек:** Асинхронное ядро (asyncio), готовое к миграции на PostgreSQL/веб. Никаких прямых обращений к БД — только через репозитории
 - **Pydantic v2:** для валидации и DTO в Domain/Application. ORM-модели изолированы в Infrastructure. Маппинг в репозитории
@@ -206,4 +250,4 @@
 - **Логирование:** Не удалять существующее. Добавлять на границах сервисов
 - **Тестирование:** На текущем этапе функциональная проверка через UI
 - **Генерация:** Сверять имена/сигнатуры с контрактом. Максимально переиспользовать код
-
+- **Координация:** Выделять оркестрацию диалогов в отдельные координаторы (пример: EmployeeDialogCoordinator)

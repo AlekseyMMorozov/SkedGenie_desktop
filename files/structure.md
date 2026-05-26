@@ -36,9 +36,11 @@ SkedGenie_desktop/
         employee_controller.py
         task_controller.py
       dialogs/
+        employee_card_dialog.py
         employee_dialog.py
         task_dialog.py
       widgets/
+        employee_card_sections.py
         employee_dialog_coordinator.py
         employee_list_widget.py
         log_panel.py
@@ -396,6 +398,33 @@ class TaskController:
   async def update_task(self, task_id: UUID, schema: TaskUpdateSchema) -> TaskReadSchema
   async def delete_task(self, task_id: UUID) -> None
 
+# employee_card_dialog.py
+## Импорты
+- from __future__ import annotations
+- import logging
+- from datetime import date
+- from tkinter import messagebox
+- from typing import Callable, Optional
+- from uuid import UUID
+- import customtkinter as ctk
+- from pydantic import ValidationError
+- from src.application.schemas.employee_schemas import EmployeeReadSchema, EmployeeUpdateSchema
+- from src.core.logging_config import log_ui_event
+- from src.presentation.font_manager import get_font_manager
+- from src.presentation.widgets.employee_card_sections import EditableWidget, create_contact_section, create_engagement_section, create_header_section, create_metadata_section, create_notes_section, create_personal_section, create_work_section
+## Классы
+class EmployeeCardDialog(ctk.CTkToplevel):
+  def __init__(self, master: ctk.CTk, logger: logging.Logger, employee: EmployeeReadSchema, on_save: Callable[[UUID, EmployeeUpdateSchema], None], mode: str, **kwargs) -> None
+  def _setup_window(self) -> None
+  def _build_ui(self) -> None
+  def _create_action_buttons(self, button_frame: ctk.CTkFrame) -> None
+  def _switch_mode(self, new_mode: str) -> None
+  def _on_edit_click(self) -> None
+  def _on_cancel(self) -> None
+  def _on_save_click(self) -> None
+  def _collect_editable_data(self) -> dict
+  def _on_close(self) -> None
+
 # employee_dialog.py
 ## Импорты
 - from __future__ import annotations
@@ -441,6 +470,25 @@ class TaskDialog(ctk.CTkToplevel):
   def _on_cancel(self) -> None
   def _on_save_click(self) -> None
 
+# employee_card_sections.py
+## Импорты
+- from __future__ import annotations
+- from datetime import date
+- from typing import Optional, Union
+- from uuid import UUID
+- import customtkinter as ctk
+- from src.application.schemas.employee_schemas import EmployeeReadSchema
+- from src.presentation.font_manager import FontManager
+## Функции
+def _field_row(parent: ctk.CTkFrame, label: str, value: str, editable: bool = False, is_mono: bool = False, fm: Optional[FontManager] = None, field_key: Optional[str] = None, registry: Optional[dict[str, EditableWidget]] = None) -> ctk.CTkEntry | ctk.CTkLabel
+def create_header_section(parent: ctk.CTkFrame, employee: EmployeeReadSchema, fm: Optional[FontManager]) -> ctk.CTkFrame
+def create_personal_section(parent: ctk.CTkFrame, employee: EmployeeReadSchema, fm: Optional[FontManager], editable: bool = False) -> SectionResult
+def create_contact_section(parent: ctk.CTkFrame, employee: EmployeeReadSchema, fm: Optional[FontManager], editable: bool = False) -> SectionResult
+def create_work_section(parent: ctk.CTkFrame, employee: EmployeeReadSchema, fm: Optional[FontManager], editable: bool = False) -> SectionResult
+def create_engagement_section(parent: ctk.CTkFrame, engagement_ids: list[UUID], fm: Optional[FontManager]) -> ctk.CTkFrame
+def create_notes_section(parent: ctk.CTkFrame, notes: Optional[str], fm: Optional[FontManager], editable: bool = False) -> SectionResult
+def create_metadata_section(parent: ctk.CTkFrame, employee: EmployeeReadSchema, fm: Optional[FontManager]) -> ctk.CTkFrame
+
 # employee_dialog_coordinator.py
 ## Импорты
 - from __future__ import annotations
@@ -454,13 +502,15 @@ class TaskDialog(ctk.CTkToplevel):
 - from src.domain.employees.employee_exceptions import DuplicateEmployeeError
 - from src.presentation.async_bridge import AsyncBridge
 - from src.presentation.controllers.employee_controller import EmployeeController
+- from src.presentation.dialogs.employee_card_dialog import EmployeeCardDialog
 - from src.presentation.dialogs.employee_dialog import EmployeeDialog
 ## Классы
 class EmployeeDialogCoordinator:
   def __init__(self, master: ctk.CTk, controller: EmployeeController, bridge: AsyncBridge, logger: logging.Logger, on_success: Callable[[], None]) -> None
   def open_create_dialog(self) -> None
-  def open_edit_dialog(self, employee: EmployeeReadSchema) -> None
+  def open_card_dialog(self, employee: EmployeeReadSchema) -> None
   def _dispatch_save(self, employee_id: Optional[UUID], schema: Union[EmployeeCreateSchema, EmployeeUpdateSchema]) -> None
+  def _on_card_save(self, employee_id: UUID, schema: EmployeeUpdateSchema) -> None
   def _execute_create(self, schema: EmployeeCreateSchema, attempt: int) -> None
   def _on_create_success(self, employee: EmployeeReadSchema) -> None
   def _on_create_error(self, exc: Exception, schema: EmployeeCreateSchema, attempt: int) -> None
@@ -492,7 +542,7 @@ class EmployeeListWidget(ctk.CTkFrame):
   def _on_refresh_error(self, exc: Exception) -> None
   def _get_selected_employee(self) -> Optional[EmployeeReadSchema]
   def _on_create_click(self) -> None
-  def _on_update_click(self) -> None
+  def _on_view_click(self) -> None
   def _on_delete_click(self) -> None
   def _confirm_delete(self, employee: EmployeeReadSchema, task_count: int) -> None
   def _on_delete_success(self, deleted_id: UUID, affected_tasks: int) -> None
@@ -619,6 +669,7 @@ class TaskListWidget(ctk.CTkFrame):
 - import asyncio
 - import logging
 - import threading
+- import tkinter
 - from typing import Any, Callable, Coroutine
 - import customtkinter as ctk
 ## Классы
@@ -748,3 +799,4 @@ class Settings:
 - from src.presentation.settings import AppSettings
 ## Функции
 def main() -> None
+def test_gui_update()

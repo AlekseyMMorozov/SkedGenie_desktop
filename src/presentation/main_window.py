@@ -483,15 +483,23 @@ class MainWindow(ctk.CTk):
         self.mainloop()
 
     def _initial_load(self) -> None:
-        """Первичная загрузка данных из БД при старте приложения.
-
-        Загружает задачи и сотрудников, если соответствующие виджеты
-        инициализированы.
-        """
         self._logger.info("MainWindow: первичная загрузка данных из БД")
 
-        if self._task_list_widget is not None:
-            self._task_list_widget.refresh()
+        # ✅ Даём времени на полную отрисовку окна
+        def _deferred_load():
+            if self._task_widget:
+                self._bridge.run(
+                    self._task_controller.get_all_tasks(),
+                    on_success=self._task_widget.refresh,
+                    on_error=self._task_widget._on_refresh_error
+                )
+            if self._employee_widget:
+                self._bridge.run(
+                    self._employee_controller.get_all_employees(),
+                    on_success=self._employee_widget.refresh,
+                    on_error=self._employee_widget._on_refresh_error
+                )
 
-        if self._employee_list_widget is not None:
-            self._employee_list_widget.refresh()
+        self.after(200, _deferred_load)  # ✅ 200мс задержка
+
+

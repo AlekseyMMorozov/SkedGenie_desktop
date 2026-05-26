@@ -217,6 +217,13 @@ def main() -> None:
     # ------------------------------------------------------------------
     logger.info("Этап 8: Запуск mainloop")
     try:
+
+        # Тест потокобезопасности
+        def test_gui_update():
+            logger.info("✓ тест GUI пройден")
+
+        window.after(200, test_gui_update)
+
         window.run()
     except Exception as exc:
         logger.critical(

@@ -517,26 +517,46 @@ class TaskListWidget(ctk.CTkFrame):
     # Вспомогательные методы
     # ------------------------------------------------------------------
     def _populate_table(self, tasks: list[TaskReadSchema]) -> None:
-        """Заполнить таблицу задачами (полная перезапись)."""
-        for item_id in self._treeview.get_children():
-            self._treeview.delete(item_id)
-        self._tasks_by_id.clear()
-        self._task_counter = 0
+        """Заполнить таблицу задачами (полная перезапись) с защитой от гонки инициализации."""
+        # ✅ Защита 1: виджет уже уничтожен (например, при быстром закрытии окна)
+        if not self.winfo_exists():
+            self._logger.debug("TaskListWidget: виджет уничтожён, пропуск обновления таблицы")
+            return
 
-        for task in tasks:
-            period_localized = PERIOD_TYPE_RU.get(task.period_type, task.period_type)
-            self._task_counter += 1
-            item_id = self._treeview.insert(
-                parent="",
-                index="end",
-                values=(self._task_counter, task.name, period_localized),
+        # ✅ Защита 2: Treeview ещё не создан или удалён
+        if not hasattr(self, '_treeview') or self._treeview is None:
+            self._logger.debug("TaskListWidget: Treeview не инициализирован, пропуск обновления")
+            return
+
+        try:
+            # ✅ Очистка текущих данных
+            for item_id in self._treeview.get_children():
+                self._treeview.delete(item_id)
+            self._tasks_by_id.clear()
+            self._task_counter = 0
+
+            # ✅ Вставка новых записей
+            for task in tasks:
+                period_localized = PERIOD_TYPE_RU.get(task.period_type, task.period_type)
+                self._task_counter += 1
+                item_id = self._treeview.insert(
+                    parent="",
+                    index="end",
+                    values=(self._task_counter, task.name, period_localized),
+                )
+                self._tasks_by_id[item_id] = task
+
+            self._logger.debug(
+                "TaskListWidget: таблица обновлена, задач: %d",
+                len(tasks),
             )
-            self._tasks_by_id[item_id] = task
-
-        self._logger.debug(
-            "TaskListWidget: таблица обновлена, задач: %d",
-            len(tasks),
-        )
+        except Exception as exc:
+            # ✅ Безопасная обработка ошибок без краша GUI-процесса
+            self._logger.error(
+                "TaskListWidget: критическая ошибка при заполнении таблицы: %s",
+                exc,
+                exc_info=True
+            )
 
     def _get_selected_task(self) -> Optional[TaskReadSchema]:
         """Получить выбранную в таблице задачу."""

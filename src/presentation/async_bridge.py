@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import tkinter
 from typing import Any, Callable, Coroutine
 
 import customtkinter as ctk
@@ -287,14 +288,18 @@ class AsyncBridge:
             self._safe_gui_call(on_success, result)
 
     def _safe_gui_call(self, callback: Callable[..., None], *args: Any) -> None:
-        """Безопасный вызов коллбэка в GUI-потоке через ``root.after``.
-
-        Защищает от исключений в случае, если главное окно уже уничтожено.
-        """
+        """Безопасный вызов коллбэка в GUI-потоке через ``root.after``."""
         try:
             self._root.after(0, callback, *args)
-        except Exception:
+        except tkinter.TclError as exc:
+            # ✅ Ловим специфичную ошибку уничтоженного окна
             self._logger.debug(
-                "AsyncBridge: не удалось запланировать коллбэк в GUI-поток "
-                "(окно уже уничтожено)",
+                "AsyncBridge: TclError при планировании коллбэка: %s", exc
             )
+        except Exception as exc:
+            # ✅ Логируем НЕОЖИДАННЫЕ исключения — это важно для отладки
+            self._logger.error(
+                "AsyncBridge: НЕОЖИДАННОЕ исключение в _safe_gui_call: %s",
+                exc, exc_info=True
+            )
+
