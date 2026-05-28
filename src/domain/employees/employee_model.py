@@ -45,6 +45,7 @@ class Employee(BaseModel):
         middle_name: Отчество (опционально).
         display_name: Представление для графика (вычисляется автоматически).
         position: Должность.
+        rank: Звание (опционально).
         tab_number: Табельный номер.
         email: Электронная почта.
         phone: Телефон.
@@ -70,6 +71,7 @@ class Employee(BaseModel):
 
     # Служебные данные
     position: Optional[str] = Field(default=None, max_length=200)
+    rank: Optional[str] = Field(default=None, max_length=100)  # ✅ Звание
     tab_number: Optional[str] = Field(default=None, max_length=50)
     email: Optional[str] = Field(default=None, max_length=200)
     phone: Optional[str] = Field(default=None, max_length=50)

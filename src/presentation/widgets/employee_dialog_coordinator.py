@@ -33,7 +33,6 @@ from src.core.logging_config import log_ui_event, log_user_action, log_user_erro
 from src.domain.employees.employee_exceptions import DuplicateEmployeeError
 from src.presentation.async_bridge import AsyncBridge
 from src.presentation.controllers.employee_controller import EmployeeController
-from src.presentation.dialogs.employee_card_dialog import EmployeeCardDialog
 from src.presentation.dialogs.employee_dialog import EmployeeDialog
 
 
@@ -68,49 +67,25 @@ class EmployeeDialogCoordinator:
     # Открытие диалогов
     # ------------------------------------------------------------------
     def open_create_dialog(self) -> None:
-        """Открыть диалог создания сотрудника."""
-        log_ui_event(
-            self._logger,
-            widget="EmployeeDialogCoordinator",
-            event="OPEN_CREATE_DIALOG",
-            data="",
-        )
-
+        """Открытие диалога создания сотрудника."""
         dialog = EmployeeDialog(
             master=self._master,
             logger=self._logger,
             on_save=self._dispatch_save,
-            employee=None,
-            prefill_data=None,
+            mode="create",
         )
-        dialog.focus()
+        dialog.focus_set()
 
     def open_card_dialog(self, employee: EmployeeReadSchema) -> None:
-        """Открыть диалог просмотра карточки сотрудника (режим view).
-
-        Из карточки пользователь может перейти в режим редактирования
-        inline-кнопкой "Изменить". Сохранение изменений делегируется
-        `_on_card_save`, который использует тот же `AsyncBridge` и
-        `EmployeeController`, что и создание.
-
-        Args:
-            employee: данные сотрудника для отображения.
-        """
-        log_ui_event(
-            self._logger,
-            widget="EmployeeDialogCoordinator",
-            event="OPEN_CARD_DIALOG",
-            data=f"employee_id={employee.id}",
-        )
-
-        dialog = EmployeeCardDialog(
+        """Открытие карточки сотрудника в режиме просмотра (view)."""
+        dialog = EmployeeDialog(
             master=self._master,
             logger=self._logger,
-            employee=employee,
             on_save=self._on_card_save,
             mode="view",
+            employee=employee,
         )
-        dialog.focus()
+        dialog.focus_set()
 
     # ------------------------------------------------------------------
     # Диспетчеризация сохранения (из EmployeeDialog)

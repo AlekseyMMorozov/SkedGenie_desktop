@@ -1,33 +1,22 @@
-# src/presentation/dialogs/employee_dialog.py
 """
-Универсальный диалог создания и редактирования сотрудника.
+src/presentation/dialogs/employee_dialog.py
+Унифицированный диалог сотрудника: создание / просмотр / редактирование.
 
-Режимы работы:
-    - employee=None → режим создания, возвращает EmployeeCreateSchema
-    - employee=EmployeeReadSchema → режим редактирования, возвращает EmployeeUpdateSchema
+Режимы:
+    - create: пустая форма, поля активны, кнопка «Сохранить».
+    - view:   заполненная форма, поля НЕАКТИВНЫ, кнопка «Изменить».
+    - edit:   заполненная форма, поля активны, кнопка «Сохранить изменения».
 
-Унифицированный колбэк on_save:
-    on_save(employee_id: Optional[UUID], schema: Union[EmployeeCreateSchema, EmployeeUpdateSchema])
-
-Ответственность:
-    - Сбор данных из UI-полей.
-    - Валидация через Pydantic-схемы (EmployeeCreateSchema/EmployeeUpdateSchema).
-    - Обработка ошибок валидации с отображением пользователю.
-    - Логирование UI-событий через log_ui_event.
-
-Границы:
-    - НЕ выполняет persistence — делегирует контроллеру через коллбэк.
-    - НЕ обращается к БД напрямую.
-    - НЕ содержит бизнес-логики — только UI и валидация.
-
-Примечание:
-    Поле engagement_ids (many-to-many с Engagements) временно скрыто,
-    так как Engagement как Domain-модель ещё не реализован.
-    Будет добавлено после создания EngagementController.
+Особенности:
+    - Кнопки закреплены ВВЕРХУ окна (всегда видны).
+    - Двухколоночный layout в ScrollableFrame.
+    - Безопасный ввод даты через три поля (ДД/ММ/ГГГГ) во всех режимах.
+    - Единая валидация через Pydantic-схемы + перехват доменных исключений.
 """
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date
 from tkinter import messagebox
 from typing import Callable, Optional, Union
@@ -45,7 +34,12 @@ from src.core.logging_config import log_ui_event
 
 
 class EmployeeDialog(ctk.CTkToplevel):
-    """Модальный диалог для создания или редактирования сотрудника."""
+    """Универсальный диалог сотрудника (создание / просмотр / редактирование)."""
+
+    _WINDOW_WIDTH: int = 720
+    _WINDOW_HEIGHT: int = 500
+    _PAD_X: int = 12
+    _PAD_Y: int = 6
 
     def __init__(
         self,
@@ -54,314 +48,406 @@ class EmployeeDialog(ctk.CTkToplevel):
         on_save: Callable[
             [Optional[UUID], Union[EmployeeCreateSchema, EmployeeUpdateSchema]], None
         ],
+        mode: str = "create",
         employee: Optional[EmployeeReadSchema] = None,
         prefill_data: Optional[dict] = None,
         **kwargs,
     ) -> None:
-        """Инициализация диалога.
-
-        Args:
-            master: родительское окно (MainWindow).
-            logger: логгер для записи событий.
-            on_save: коллбэк, вызываемый при сохранении.
-                     Принимает (employee_id, schema).
-            employee: существующий сотрудник для редактирования или None для создания.
-            prefill_data: данные для предзаполнения полей (при повторном открытии после ошибки).
-            **kwargs: дополнительные параметры для CTkToplevel.
-        """
         super().__init__(master, **kwargs)
         self._logger = logger
         self._on_save = on_save
         self._employee = employee
         self._prefill_data = prefill_data
-        self._is_edit_mode = employee is not None
+        self._mode = mode  # "create" | "view" | "edit"
+
+        # Поля ввода
+        self._entry_last_name: ctk.CTkEntry | None = None
+        self._entry_first_name: ctk.CTkEntry | None = None
+        self._entry_middle_name: ctk.CTkEntry | None = None
+        self._entry_birth_day: ctk.CTkEntry | None = None
+        self._entry_birth_month: ctk.CTkEntry | None = None
+        self._entry_birth_year: ctk.CTkEntry | None = None
+        self._entry_position: ctk.CTkEntry | None = None
+        self._entry_rank: ctk.CTkEntry | None = None
+        self._entry_tab_number: ctk.CTkEntry | None = None
+        self._entry_email: ctk.CTkEntry | None = None
+        self._entry_phone: ctk.CTkEntry | None = None
+        self._entry_notes: ctk.CTkTextbox | None = None
+        self._switch_is_active: ctk.CTkSwitch | None = None
+
+        # Кнопки (для динамического переключения)
+        self._btn_primary: ctk.CTkButton | None = None
+        self._btn_secondary: ctk.CTkButton | None = None
 
         self._setup_window()
         self._create_widgets()
+        self._populate_fields()
+        self._apply_mode()
 
         log_ui_event(
             self._logger,
             widget="EmployeeDialog",
             event="OPENED",
-            data=f"mode={'edit' if self._is_edit_mode else 'create'}, employee_id={employee.id if employee else None}, has_prefill={bool(prefill_data)}",
+            data=f"mode={self._mode}, "
+                 f"employee_id={self._employee.id if self._employee else None}, "
+                 f"has_prefill={prefill_data is not None}",
         )
 
     # ------------------------------------------------------------------
-    # Настройка окна
+    # Window setup
     # ------------------------------------------------------------------
     def _setup_window(self) -> None:
-        """Настроить размеры, позицию и модальность окна."""
-        self.title(
-            "Редактирование сотрудника" if self._is_edit_mode else "Создание сотрудника"
-        )
-        self.geometry("600x700")
-        self.resizable(False, False)
-
-        # Модальность: блокируем взаимодействие с родительским окном
+        titles = {"create": "Новый сотрудник", "view": "Карточка сотрудника", "edit": "Редактирование"}
+        self.title(titles.get(self._mode, "Сотрудник"))
+        self.geometry(f"{self._WINDOW_WIDTH}x{self._WINDOW_HEIGHT}")
+        self.resizable(True, True)
+        self.minsize(580, 400)
         self.transient(self.master)
         self.grab_set()
-
-        # Центрирование относительно родителя
-        self.update_idletasks()
-        parent_x = self.master.winfo_rootx()
-        parent_y = self.master.winfo_rooty()
-        parent_width = self.master.winfo_width()
-        parent_height = self.master.winfo_height()
-
-        dialog_width = 600
-        dialog_height = 700
-
-        x = parent_x + (parent_width - dialog_width) // 2
-        y = parent_y + (parent_height - dialog_height) // 2
-
-        self.geometry(f"+{x}+{y}")
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
 
     # ------------------------------------------------------------------
-    # Создание виджетов
+    # Widgets creation
     # ------------------------------------------------------------------
     def _create_widgets(self) -> None:
-        """Создать все UI-компоненты диалога."""
-        # Основной контейнер с отступами
-        main_frame = ctk.CTkFrame(self, fg_color="transparent")
-        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        """Кнопки ВВЕРХУ + контент внизу с прокруткой."""
 
-        # Прокручиваемая область для полей
-        scrollable_frame = ctk.CTkScrollableFrame(main_frame)
-        scrollable_frame.pack(fill="both", expand=True)
+        # === ПАНЕЛЬ КНОПОК (ВСЕГДА ВВЕРХУ) ===
+        button_panel = ctk.CTkFrame(self, fg_color=("gray85", "gray25"), height=50)
+        button_panel.pack(fill="x", side="top", padx=0, pady=0)
+        button_panel.pack_propagate(False)
 
-        # === Секция: ФИО ===
-        name_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
-        name_frame.pack(fill="x", pady=(0, 15))
+        separator = ctk.CTkFrame(self, height=2, fg_color=("gray70", "gray40"))
+        separator.pack(fill="x", side="top", padx=0, pady=0)
 
-        ctk.CTkLabel(name_frame, text="Фамилия *", font=ctk.CTkFont(weight="bold")).pack(
-            anchor="w"
+        btn_inner = ctk.CTkFrame(button_panel, fg_color="transparent")
+        btn_inner.pack(expand=True, fill="both", padx=self._PAD_X, pady=8)
+
+        self._btn_secondary = ctk.CTkButton(
+            btn_inner, text="Отмена", command=self._on_cancel,
+            fg_color="gray40", hover_color="gray30", height=32, width=100,
         )
-        self._last_name_entry = ctk.CTkEntry(name_frame, placeholder_text="Иванов")
-        self._last_name_entry.pack(fill="x", pady=(5, 10))
+        self._btn_secondary.pack(side="left")
 
-        ctk.CTkLabel(name_frame, text="Имя *", font=ctk.CTkFont(weight="bold")).pack(
-            anchor="w"
+        self._btn_primary = ctk.CTkButton(
+            btn_inner, text="Сохранить", command=self._on_primary_click,
+            height=32, width=160,
         )
-        self._first_name_entry = ctk.CTkEntry(name_frame, placeholder_text="Иван")
-        self._first_name_entry.pack(fill="x", pady=(5, 10))
+        self._btn_primary.pack(side="right")
 
-        ctk.CTkLabel(name_frame, text="Отчество").pack(anchor="w")
-        self._middle_name_entry = ctk.CTkEntry(
-            name_frame, placeholder_text="Иванович (необязательно)"
-        )
-        self._middle_name_entry.pack(fill="x", pady=(5, 0))
+        # === ОСНОВНОЙ КОНТЕНТ (С ПРОКРУТКОЙ) ===
+        scroll_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        scroll_frame.pack(fill="both", expand=True, padx=0, pady=0)
 
-        # === Секция: Работа ===
-        work_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
-        work_frame.pack(fill="x", pady=(0, 15))
+        content = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=self._PAD_X, pady=self._PAD_Y)
 
-        ctk.CTkLabel(work_frame, text="Должность").pack(anchor="w")
-        self._position_entry = ctk.CTkEntry(
-            work_frame, placeholder_text="Инженер (необязательно)"
-        )
-        self._position_entry.pack(fill="x", pady=(5, 10))
+        # --- Левая колонка ---
+        left_col = ctk.CTkFrame(content, fg_color="transparent")
+        left_col.pack(side="left", fill="both", expand=True, padx=(0, self._PAD_X // 2))
 
-        ctk.CTkLabel(work_frame, text="Табельный номер").pack(anchor="w")
-        self._tab_number_entry = ctk.CTkEntry(
-            work_frame, placeholder_text="12345 (необязательно, уникальный)"
-        )
-        self._tab_number_entry.pack(fill="x", pady=(5, 0))
+        ctk.CTkLabel(left_col, text="Личные данные", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(0, 4))
+        self._entry_last_name = self._add_field(left_col, "Фамилия *", placeholder="Иванов")
+        self._entry_first_name = self._add_field(left_col, "Имя *", placeholder="Иван")
+        self._entry_middle_name = self._add_field(left_col, "Отчество", placeholder="Иванович")
 
-        # === Секция: Контакты ===
-        contact_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
-        contact_frame.pack(fill="x", pady=(0, 15))
+        # Дата рождения (три поля)
+        birth_frame = ctk.CTkFrame(left_col, fg_color="transparent")
+        birth_frame.pack(fill="x", pady=self._PAD_Y)
+        ctk.CTkLabel(birth_frame, text="Дата рождения", font=ctk.CTkFont(size=12)).pack(anchor="w")
+        date_row = ctk.CTkFrame(birth_frame, fg_color="transparent")
+        date_row.pack(fill="x", pady=(2, 0))
 
-        ctk.CTkLabel(contact_frame, text="Email").pack(anchor="w")
-        self._email_entry = ctk.CTkEntry(
-            contact_frame, placeholder_text="ivanov@example.com (необязательно, уникальный)"
-        )
-        self._email_entry.pack(fill="x", pady=(5, 10))
+        self._entry_birth_day = ctk.CTkEntry(date_row, width=40, placeholder_text="ДД")
+        self._entry_birth_day.pack(side="left", padx=(0, 4))
+        self._entry_birth_day.bind("<KeyRelease>", lambda e: self._auto_tab(e, self._entry_birth_day, self._entry_birth_month, 2))
+        self._entry_birth_day.bind("<FocusOut>", lambda e: self._pad_date_field(self._entry_birth_day, 2))
 
-        ctk.CTkLabel(contact_frame, text="Телефон").pack(anchor="w")
-        self._phone_entry = ctk.CTkEntry(
-            contact_frame, placeholder_text="+7 (999) 123-45-67 (необязательно)"
-        )
-        self._phone_entry.pack(fill="x", pady=(5, 10))
+        ctk.CTkLabel(date_row, text="/").pack(side="left")
 
-        ctk.CTkLabel(contact_frame, text="Дата рождения").pack(anchor="w")
-        self._birth_date_entry = ctk.CTkEntry(
-            contact_frame, placeholder_text="ГГГГ-ММ-ДД (необязательно)"
-        )
-        self._birth_date_entry.pack(fill="x", pady=(5, 0))
+        self._entry_birth_month = ctk.CTkEntry(date_row, width=40, placeholder_text="ММ")
+        self._entry_birth_month.pack(side="left", padx=(4, 4))
+        self._entry_birth_month.bind("<KeyRelease>", lambda e: self._auto_tab(e, self._entry_birth_month, self._entry_birth_year, 2))
+        self._entry_birth_month.bind("<FocusOut>", lambda e: self._pad_date_field(self._entry_birth_month, 2))
 
-        # === Секция: Статус ===
-        status_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
-        status_frame.pack(fill="x", pady=(0, 15))
+        ctk.CTkLabel(date_row, text="/").pack(side="left")
 
-        self._is_active_var = ctk.BooleanVar(value=True)
-        self._is_active_switch = ctk.CTkSwitch(
-            status_frame,
-            text="Активен (участвует в планировании)",
-            variable=self._is_active_var,
-        )
-        self._is_active_switch.pack(anchor="w")
+        self._entry_birth_year = ctk.CTkEntry(date_row, width=60, placeholder_text="ГГГГ")
+        self._entry_birth_year.pack(side="left", padx=(4, 0))
+        self._entry_birth_year.bind("<FocusOut>", lambda e: self._pad_date_field(self._entry_birth_year, 4))
 
-        # === Секция: Заметки ===
-        notes_frame = ctk.CTkFrame(scrollable_frame, fg_color="transparent")
-        notes_frame.pack(fill="x", pady=(0, 15))
+        # Контакты
+        ctk.CTkLabel(left_col, text="Контакты", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(8, 4))
+        self._entry_email = self._add_field(left_col, "Email", placeholder="example@mail.ru")
+        self._entry_phone = self._add_field(left_col, "Телефон", placeholder="+7 (999) 000-00-00")
 
-        ctk.CTkLabel(notes_frame, text="Заметки").pack(anchor="w")
-        self._notes_textbox = ctk.CTkTextbox(notes_frame, height=100)
-        self._notes_textbox.pack(fill="x", pady=(5, 0))
+        # --- Правая колонка ---
+        right_col = ctk.CTkFrame(content, fg_color="transparent")
+        right_col.pack(side="right", fill="both", expand=True, padx=(self._PAD_X // 2, 0))
 
-        # === Кнопки действий ===
-        button_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        button_frame.pack(fill="x", pady=(15, 0))
+        ctk.CTkLabel(right_col, text="Работа", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(0, 4))
+        self._entry_position = self._add_field(right_col, "Должность", placeholder="Инженер")
+        self._entry_rank = self._add_field(right_col, "Звание", placeholder="Старший лейтенант")
+        self._entry_tab_number = self._add_field(right_col, "Табельный номер", placeholder="ТН-001")
 
-        cancel_button = ctk.CTkButton(
-            button_frame, text="Отмена", command=self._on_cancel, fg_color="gray"
-        )
-        cancel_button.pack(side="right", padx=(10, 0))
+        status_frame = ctk.CTkFrame(right_col, fg_color="transparent")
+        status_frame.pack(fill="x", pady=self._PAD_Y)
+        ctk.CTkLabel(status_frame, text="Статус", font=ctk.CTkFont(size=12)).pack(anchor="w")
+        self._switch_is_active = ctk.CTkSwitch(status_frame, text="Активен", onvalue=True, offvalue=False)
+        self._switch_is_active.pack(anchor="w", pady=(2, 0))
 
-        save_button = ctk.CTkButton(
-            button_frame, text="Сохранить", command=self._on_save_click
-        )
-        save_button.pack(side="right")
-
-        # Заполнение полей
-        self._populate_fields()
-
-    def _populate_fields(self) -> None:
-        """Заполнить поля данными существующего сотрудника или предзаполненными данными."""
-        # Приоритет: prefill_data > employee > пустые поля
-        if self._prefill_data:
-            self._populate_from_prefill()
-        elif self._is_edit_mode and self._employee:
-            self._populate_from_employee()
-
-    def _populate_from_employee(self) -> None:
-        """Заполнить поля данными существующего сотрудника (режим редактирования)."""
-        emp = self._employee
-        self._last_name_entry.insert(0, emp.last_name or "")
-        self._first_name_entry.insert(0, emp.first_name or "")
-        self._middle_name_entry.insert(0, emp.middle_name or "")
-        self._position_entry.insert(0, emp.position or "")
-        self._tab_number_entry.insert(0, emp.tab_number or "")
-        self._email_entry.insert(0, emp.email or "")
-        self._phone_entry.insert(0, emp.phone or "")
-        if emp.birth_date:
-            self._birth_date_entry.insert(0, emp.birth_date.isoformat())
-        self._is_active_var.set(emp.is_active)
-        if emp.notes:
-            self._notes_textbox.insert("1.0", emp.notes)
-
-    def _populate_from_prefill(self) -> None:
-        """Заполнить поля предзаполненными данными (при повторном открытии после ошибки)."""
-        data = self._prefill_data
-        self._last_name_entry.insert(0, data.get("last_name") or "")
-        self._first_name_entry.insert(0, data.get("first_name") or "")
-        self._middle_name_entry.insert(0, data.get("middle_name") or "")
-        self._position_entry.insert(0, data.get("position") or "")
-        self._tab_number_entry.insert(0, data.get("tab_number") or "")
-        self._email_entry.insert(0, data.get("email") or "")
-        self._phone_entry.insert(0, data.get("phone") or "")
-        birth_date = data.get("birth_date")
-        if birth_date:
-            if isinstance(birth_date, date):
-                self._birth_date_entry.insert(0, birth_date.isoformat())
-            else:
-                self._birth_date_entry.insert(0, str(birth_date))
-        self._is_active_var.set(data.get("is_active", True))
-        notes = data.get("notes")
-        if notes:
-            self._notes_textbox.insert("1.0", notes)
+        ctk.CTkLabel(right_col, text="Заметки", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(8, 4))
+        self._entry_notes = ctk.CTkTextbox(right_col, height=120, font=ctk.CTkFont(size=12))
+        self._entry_notes.pack(fill="both", expand=True, pady=(0, self._PAD_Y))
 
     # ------------------------------------------------------------------
-    # Обработчики событий
+    # Helper methods
     # ------------------------------------------------------------------
-    def _on_save_click(self) -> None:
-        """Обработать нажатие кнопки 'Сохранить'."""
-        try:
-            # Сбор данных из полей
-            data = {
-                "last_name": self._last_name_entry.get().strip(),
-                "first_name": self._first_name_entry.get().strip(),
-                "middle_name": self._middle_name_entry.get().strip() or None,
-                "position": self._position_entry.get().strip() or None,
-                "tab_number": self._tab_number_entry.get().strip() or None,
-                "email": self._email_entry.get().strip() or None,
-                "phone": self._phone_entry.get().strip() or None,
-                "birth_date": self._parse_birth_date(),
-                "is_active": self._is_active_var.get(),
-                "notes": self._notes_textbox.get("1.0", "end-1c").strip() or None,
-                "engagement_ids": [],  # Заглушка: будет реализовано позже
-            }
+    def _add_field(self, parent: ctk.CTkFrame, label: str, placeholder: str = "") -> ctk.CTkEntry:
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.pack(fill="x", pady=self._PAD_Y)
+        ctk.CTkLabel(frame, text=label, font=ctk.CTkFont(size=12)).pack(anchor="w")
+        entry = ctk.CTkEntry(frame, placeholder_text=placeholder, font=ctk.CTkFont(size=12))
+        entry.pack(fill="x", pady=(2, 0))
+        return entry
 
-            # Валидация и создание схемы
-            if self._is_edit_mode and self._employee:
-                schema = EmployeeUpdateSchema(**data)
-                employee_id = self._employee.id
-            else:
-                schema = EmployeeCreateSchema(**data)
-                employee_id = None
+    @staticmethod
+    def _auto_tab(event, current_entry: ctk.CTkEntry, next_entry: ctk.CTkEntry, max_len: int) -> None:
+        text = current_entry.get()
+        filtered = re.sub(r"\D", "", text)
+        if filtered != text:
+            current_entry.delete(0, "end")
+            current_entry.insert(0, filtered)
+        if len(filtered) >= max_len and next_entry is not None:
+            next_entry.focus_set()
 
-            # Вызов коллбэка
-            self._on_save(employee_id, schema)
-
-            log_ui_event(
-                self._logger,
-                widget="EmployeeDialog",
-                event="SAVE_CLICKED",
-                data=f"mode={'edit' if self._is_edit_mode else 'create'}, employee_id={employee_id}",
-            )
-
-            # Закрытие диалога
-            self.destroy()
-
-        except ValidationError as e:
-            # Ошибка валидации Pydantic
-            errors = []
-            for error in e.errors():
-                field = " → ".join(str(loc) for loc in error["loc"])
-                msg = error["msg"]
-                errors.append(f"{field}: {msg}")
-
-            error_message = "\n".join(errors)
-            messagebox.showerror(
-                "Ошибка валидации",
-                f"Пожалуйста, исправьте следующие ошибки:\n\n{error_message}",
-                parent=self,
-            )
-            log_ui_event(
-                self._logger,
-                widget="EmployeeDialog",
-                event="VALIDATION_ERROR",
-                data=error_message,
-            )
-
-        except Exception as exc:
-            # Непредвиденная ошибка
-            messagebox.showerror(
-                "Ошибка",
-                f"Произошла непредвиденная ошибка:\n{exc}",
-                parent=self,
-            )
-            self._logger.exception("Unexpected error in EmployeeDialog._on_save_click")
+    @staticmethod
+    def _pad_date_field(entry: ctk.CTkEntry, expected_len: int) -> None:
+        text = re.sub(r"\D", "", entry.get())
+        if text:
+            entry.delete(0, "end")
+            entry.insert(0, text.zfill(expected_len))
 
     def _parse_birth_date(self) -> Optional[date]:
-        """Распарсить дату рождения из текстового поля."""
-        date_str = self._birth_date_entry.get().strip()
-        if not date_str:
+        day_str = re.sub(r"\D", "", self._entry_birth_day.get()) if self._entry_birth_day else ""
+        month_str = re.sub(r"\D", "", self._entry_birth_month.get()) if self._entry_birth_month else ""
+        year_str = re.sub(r"\D", "", self._entry_birth_year.get()) if self._entry_birth_year else ""
+
+        if not day_str and not month_str and not year_str:
             return None
+        if not day_str or not month_str or not year_str:
+            raise ValueError("Заполните дату полностью: день, месяц и год")
+        try:
+            return date(int(year_str), int(month_str), int(day_str))
+        except ValueError as exc:
+            raise ValueError(f"Некорректная дата: {exc}") from exc
+
+    # ------------------------------------------------------------------
+    # Mode management
+    # ------------------------------------------------------------------
+    def _apply_mode(self) -> None:
+        """Применение режима: настройка кнопок и блокировка полей."""
+        readonly = self._mode == "view"
+
+        # Блокировка / разблокировка всех полей
+        all_entries = [
+            self._entry_last_name, self._entry_first_name, self._entry_middle_name,
+            self._entry_birth_day, self._entry_birth_month, self._entry_birth_year,
+            self._entry_position, self._entry_rank, self._entry_tab_number,
+            self._entry_email, self._entry_phone,
+        ]
+        for entry in all_entries:
+            if entry is not None:
+                if readonly:
+                    entry.configure(state="disabled")
+                else:
+                    entry.configure(state="normal")
+
+        if self._entry_notes is not None:
+            if readonly:
+                self._entry_notes.configure(state="disabled")
+            else:
+                self._entry_notes.configure(state="normal")
+
+        if self._switch_is_active is not None:
+            if readonly:
+                self._switch_is_active.configure(state="disabled")
+            else:
+                self._switch_is_active.configure(state="normal")
+
+        # Настройка кнопок
+        if self._mode == "view":
+            self._btn_primary.configure(text="Изменить", command=self._on_edit_click)
+            self._btn_secondary.configure(text="Закрыть")
+        elif self._mode == "edit":
+            self._btn_primary.configure(text="Сохранить изменения", command=self._on_save_click)
+            self._btn_secondary.configure(text="Отмена", command=self._on_cancel)
+        else:  # create
+            self._btn_primary.configure(text="Сохранить", command=self._on_save_click)
+            self._btn_secondary.configure(text="Отмена", command=self._on_cancel)
+
+    def _on_edit_click(self) -> None:
+        """Переключение из view в edit."""
+        self._mode = "edit"
+        self.title("Редактирование")
+        self._apply_mode()
+        log_ui_event(self._logger, widget="EmployeeDialog", event="SWITCH_TO_EDIT",
+                     data=f"employee_id={self._employee.id if self._employee else None}")
+
+    def _on_primary_click(self) -> None:
+        """Диспетчер основной кнопки (зависит от режима)."""
+        if self._mode == "view":
+            self._on_edit_click()
+        else:
+            self._on_save_click()
+
+    # ------------------------------------------------------------------
+    # Populate fields
+    # ------------------------------------------------------------------
+    def _populate_fields(self) -> None:
+        if self._employee:
+            self._populate_from_employee()
+        elif self._prefill_data:
+            self._populate_from_prefill()
+        else:
+            if self._switch_is_active:
+                self._switch_is_active.select()
+
+    def _populate_from_employee(self) -> None:
+        emp = self._employee
+        if self._entry_last_name:
+            self._entry_last_name.insert(0, emp.last_name or "")
+        if self._entry_first_name:
+            self._entry_first_name.insert(0, emp.first_name or "")
+        if self._entry_middle_name:
+            self._entry_middle_name.insert(0, emp.middle_name or "")
+        if emp.birth_date:
+            if self._entry_birth_day:
+                self._entry_birth_day.insert(0, str(emp.birth_date.day).zfill(2))
+            if self._entry_birth_month:
+                self._entry_birth_month.insert(0, str(emp.birth_date.month).zfill(2))
+            if self._entry_birth_year:
+                self._entry_birth_year.insert(0, str(emp.birth_date.year))
+        if self._entry_position:
+            self._entry_position.insert(0, emp.position or "")
+        if self._entry_rank:
+            self._entry_rank.insert(0, emp.rank or "")
+        if self._entry_tab_number:
+            self._entry_tab_number.insert(0, emp.tab_number or "")
+        if self._entry_email:
+            self._entry_email.insert(0, emp.email or "")
+        if self._entry_phone:
+            self._entry_phone.insert(0, emp.phone or "")
+        if self._entry_notes and emp.notes:
+            self._entry_notes.insert("1.0", emp.notes)
+        if self._switch_is_active:
+            if emp.is_active:
+                self._switch_is_active.select()
+            else:
+                self._switch_is_active.deselect()
+
+    def _populate_from_prefill(self) -> None:
+        data = self._prefill_data or {}
+        mapping = {
+            "last_name": self._entry_last_name,
+            "first_name": self._entry_first_name,
+            "middle_name": self._entry_middle_name,
+            "position": self._entry_position,
+            "rank": self._entry_rank,
+            "tab_number": self._entry_tab_number,
+            "email": self._entry_email,
+            "phone": self._entry_phone,
+        }
+        for key, entry in mapping.items():
+            if entry and key in data and data[key]:
+                entry.insert(0, str(data[key]))
+
+        bd = data.get("birth_date")
+        if isinstance(bd, date):
+            if self._entry_birth_day:
+                self._entry_birth_day.insert(0, str(bd.day).zfill(2))
+            if self._entry_birth_month:
+                self._entry_birth_month.insert(0, str(bd.month).zfill(2))
+            if self._entry_birth_year:
+                self._entry_birth_year.insert(0, str(bd.year))
+
+        if self._entry_notes and data.get("notes"):
+            self._entry_notes.insert("1.0", str(data["notes"]))
+
+        if self._switch_is_active:
+            if data.get("is_active", True):
+                self._switch_is_active.select()
+            else:
+                self._switch_is_active.deselect()
+
+    # ------------------------------------------------------------------
+    # Save / Cancel
+    # ------------------------------------------------------------------
+    def _on_save_click(self) -> None:
+        """Сбор данных, нормализация, валидация, вызов on_save."""
+        try:
+            birth_date = self._parse_birth_date()
+        except ValueError as exc:
+            messagebox.showwarning("Ошибка ввода", str(exc), parent=self)
+            log_ui_event(self._logger, widget="EmployeeDialog", event="VALIDATION_ERROR", data=f"birth_date: {exc}")
+            return
+
+        notes_text = ""
+        if self._entry_notes:
+            notes_text = self._entry_notes.get("1.0", "end").strip()
+
+        raw_last_name = self._entry_last_name.get().strip() if self._entry_last_name else ""
+        raw_first_name = self._entry_first_name.get().strip() if self._entry_first_name else ""
+        raw_middle_name = self._entry_middle_name.get().strip() if self._entry_middle_name else ""
+        raw_position = self._entry_position.get().strip() if self._entry_position else ""
+        raw_rank = self._entry_rank.get().strip() if self._entry_rank else ""
+        raw_tab_number = self._entry_tab_number.get().strip() if self._entry_tab_number else ""
+        raw_email = self._entry_email.get().strip() if self._entry_email else ""
+        raw_phone = self._entry_phone.get().strip() if self._entry_phone else ""
+
+        # ✅ Нормализация: пустые строки опциональных полей → None
+        common_data = {
+            "last_name": raw_last_name,
+            "first_name": raw_first_name,
+            "middle_name": raw_middle_name or None,
+            "birth_date": birth_date,
+            "position": raw_position or None,
+            "rank": raw_rank or None,
+            "tab_number": raw_tab_number or None,
+            "email": raw_email or None,
+            "phone": raw_phone or None,
+            "notes": notes_text or None,
+            "is_active": self._switch_is_active.get() if self._switch_is_active else True,
+        }
 
         try:
-            # Ожидаемый формат: ГГГГ-ММ-ДД (ISO 8601)
-            return date.fromisoformat(date_str)
-        except ValueError:
-            # Pydantic-валидатор обработает эту ошибку
-            return date_str  # Передаём строку, пусть Pydantic выбросит ValidationError
+            if self._mode == "edit" and self._employee:
+                schema = EmployeeUpdateSchema(id=self._employee.id, **common_data)
+                self._on_save(self._employee.id, schema)
+            else:
+                schema = EmployeeCreateSchema(**common_data)
+                self._on_save(None, schema)
+
+            log_ui_event(
+                self._logger, widget="EmployeeDialog", event="SAVE_CLICKED",
+                data=f"mode={self._mode}, employee_id={self._employee.id if self._employee else None}",
+            )
+            self.destroy()
+
+        except ValidationError as exc:
+            errors = []
+            for error in exc.errors():
+                field = " → ".join(str(loc) for loc in error["loc"])
+                msg = error["msg"]
+                errors.append(f"• {field}: {msg}")
+            messagebox.showwarning("Проверьте введённые данные", "\n".join(errors), parent=self)
+            log_ui_event(self._logger, widget="EmployeeDialog", event="VALIDATION_ERROR", data=str(exc))
+
+        except Exception as exc:
+            # ✅ Ловим InvalidEmployeeNameError, DuplicateEmployeeError и т.д.
+            messagebox.showerror("Ошибка сохранения", str(exc), parent=self)
+            log_ui_event(self._logger, widget="EmployeeDialog", event="SAVE_ERROR", data=str(exc))
 
     def _on_cancel(self) -> None:
-        """Обработать нажатие кнопки 'Отмена'."""
-        log_ui_event(
-            self._logger,
-            widget="EmployeeDialog",
-            event="CANCELLED",
-            data=f"mode={'edit' if self._is_edit_mode else 'create'}",
-        )
+        log_ui_event(self._logger, widget="EmployeeDialog", event="CANCELLED", data=f"mode={self._mode}")
         self.destroy()

@@ -1,29 +1,16 @@
-# src/presentation/widgets/employee_list_widget.py
 """
-Виджет списка сотрудников с таблицей и CRUD-операциями.
+Виджет списка сотрудников с таблицей.
 
-Ответственность:
-    - Отображение таблицы сотрудников (№ | ФИО | Должность | Статус).
-    - Кнопки: Создать / Просмотреть / Удалить / Обновить / Архивировать.
-    - Двойной клик → открытие карточки через координатор (view mode).
-    - Обработка CASCADE-удаления с проверкой использования в задачах.
-    - Логирование действий пользователя.
-
-Делегирование:
-    - Создание → EmployeeDialogCoordinator (диалоги + обработка ошибок).
-    - Просмотр/редактирование → EmployeeDialogCoordinator (card dialog).
-    - Удаление/архивация → прямые вызовы EmployeeController (требуют выбора строки).
-
-Границы:
-    - НЕ обращается к БД напрямую — делегирует EmployeeController.
-    - НЕ содержит бизнес-логики — только UI-оркестрация.
-    - НЕ управляет жизненным циклом диалогов — делегирует координатору.
+Поддерживает:
+    - Сортировку по клику на заголовок столбца.
+    - Изменение порядка столбцов через контекстное меню заголовка.
+    - Столбцы: №, Должность, Звание, ФИО, Статус.
 """
 from __future__ import annotations
 
 import logging
-from tkinter import messagebox, ttk
-from typing import Optional
+from tkinter import Menu, messagebox, ttk
+from typing import List, Optional
 from uuid import UUID
 
 import customtkinter as ctk
@@ -35,8 +22,18 @@ from src.presentation.controllers.employee_controller import EmployeeController
 from src.presentation.widgets.employee_dialog_coordinator import EmployeeDialogCoordinator
 
 
+# Порядок столбцов по умолчанию
+_DEFAULT_COLUMNS: list[tuple[str, str, int]] = [
+    ("num",      "№",         40),
+    ("position", "Должность", 140),
+    ("rank",     "Звание",    120),
+    ("name",     "ФИО",       180),
+    ("status",   "Статус",     80),
+]
+
+
 class EmployeeListWidget(ctk.CTkFrame):
-    """Виджет списка сотрудников с таблицей и кнопками управления."""
+    """Таблица сотрудников с сортировкой и настройкой столбцов."""
 
     def __init__(
         self,
@@ -46,441 +43,290 @@ class EmployeeListWidget(ctk.CTkFrame):
         logger: logging.Logger,
         **kwargs,
     ) -> None:
-        """Инициализация виджета.
-
-        Args:
-            master: родительское окно (MainWindow).
-            controller: EmployeeController для CRUD-операций.
-            bridge: AsyncBridge для выполнения async-операций.
-            logger: логгер для записи событий.
-            **kwargs: дополнительные параметры для CTkFrame.
-        """
         super().__init__(master, **kwargs)
         self._controller = controller
         self._bridge = bridge
         self._logger = logger
-        self._employees: list[EmployeeReadSchema] = []
 
-        # Координатор диалогов (создание + карточка)
         self._coordinator = EmployeeDialogCoordinator(
-            master=self.winfo_toplevel(),
+            master=master,
             controller=controller,
             bridge=bridge,
             logger=logger,
             on_success=self.refresh,
         )
 
+        # Текущий порядок столбцов (можно сохранять в настройки)
+        self._columns: list[tuple[str, str, int]] = list(_DEFAULT_COLUMNS)
+        self._sort_column: str = "num"
+        self._sort_reverse: bool = False
+        self._employees: list[EmployeeReadSchema] = []
+
         self._create_widgets()
-        self._configure_treeview_style()
+        log_ui_event(self._logger, widget="EmployeeListWidget", event="CREATED")
 
     # ------------------------------------------------------------------
-    # Создание виджетов
+    # Widgets
     # ------------------------------------------------------------------
     def _create_widgets(self) -> None:
-        """Создать все UI-компоненты виджета."""
-        # Заголовок
-        title_label = ctk.CTkLabel(
-            self,
-            text="Сотрудники",
-            font=ctk.CTkFont(size=20, weight="bold"),
-        )
-        title_label.pack(anchor="w", pady=(0, 15))
-
         # Панель кнопок
-        button_frame = ctk.CTkFrame(self, fg_color="transparent")
-        button_frame.pack(fill="x", pady=(0, 15))
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=8, pady=(8, 4))
 
-        create_button = ctk.CTkButton(
-            button_frame,
-            text="Создать",
-            command=self._on_create_click,
-            width=100,
-        )
-        create_button.pack(side="left", padx=(0, 10))
+        ctk.CTkButton(btn_frame, text="Создать", width=100, command=self._on_create_click).pack(side="left", padx=2)
+        ctk.CTkButton(btn_frame, text="Просмотреть", width=110, command=self._on_view_click).pack(side="left", padx=2)
+        ctk.CTkButton(btn_frame, text="Архивировать", width=110, command=self._on_archive_click).pack(side="left", padx=2)
+        ctk.CTkButton(btn_frame, text="Удалить", width=90, fg_color="#d9534f", hover_color="#c9302c",
+                       command=self._on_delete_click).pack(side="left", padx=2)
+        ctk.CTkButton(btn_frame, text="⟳ Обновить", width=100, fg_color="gray40", hover_color="gray30",
+                       command=self._on_refresh_click).pack(side="right", padx=2)
 
-        view_button = ctk.CTkButton(
-            button_frame,
-            text="Просмотр",
-            command=self._on_view_click,
-            width=120,
-        )
-        view_button.pack(side="left", padx=(0, 10))
-
-        delete_button = ctk.CTkButton(
-            button_frame,
-            text="Удалить",
-            command=self._on_delete_click,
-            width=100,
-            fg_color="red",
-            hover_color="darkred",
-        )
-        delete_button.pack(side="left", padx=(0, 10))
-
-        archive_button = ctk.CTkButton(
-            button_frame,
-            text="Вкл\Выкл",
-            command=self._on_archive_click,
-            width=120,
-        )
-        archive_button.pack(side="left", padx=(0, 10))
-
-        refresh_button = ctk.CTkButton(
-            button_frame,
-            text="Обновить",
-            command=self._on_refresh_click,
-            width=100,
-        )
-        refresh_button.pack(side="right")
-
-        # Таблица сотрудников
+        # Таблица
         tree_frame = ctk.CTkFrame(self, fg_color="transparent")
-        tree_frame.pack(fill="both", expand=True)
+        tree_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
-        columns = ("num", "display_name", "position", "status")
-        self._tree = ttk.Treeview(
-            tree_frame,
-            columns=columns,
-            show="headings",
-            selectmode="browse",
-        )
+        col_ids = [c[0] for c in self._columns]
+        self._tree = ttk.Treeview(tree_frame, columns=col_ids, show="headings", selectmode="browse")
 
-        self._tree.heading("num", text="№")
-        self._tree.heading("display_name", text="ФИО")
-        self._tree.heading("position", text="Должность")
-        self._tree.heading("status", text="Статус")
+        for col_id, heading, width in self._columns:
+            self._tree.heading(col_id, text=heading,
+                               command=lambda c=col_id: self._on_heading_click(c))
+            self._tree.column(col_id, width=width, minwidth=40)
 
-        self._tree.column("num", width=50, anchor="center")
-        self._tree.column("display_name", width=250, anchor="w")
-        self._tree.column("position", width=200, anchor="w")
-        self._tree.column("status", width=100, anchor="center")
+        scrollbar_y = ttk.Scrollbar(tree_frame, orient="vertical", command=self._tree.yview)
+        scrollbar_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self._tree.xview)
+        self._tree.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
 
-        # Прокрутка
-        scrollbar = ttk.Scrollbar(
-            tree_frame, orient="vertical", command=self._tree.yview
-        )
-        self._tree.configure(yscrollcommand=scrollbar.set)
+        self._tree.grid(row=0, column=0, sticky="nsew")
+        scrollbar_y.grid(row=0, column=1, sticky="ns")
+        scrollbar_x.grid(row=1, column=0, sticky="ew")
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
 
-        self._tree.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        # Контекстное меню заголовка для изменения порядка столбцов
+        self._header_menu = Menu(self._tree, tearoff=0)
+        self._tree.bind("<Button-3>", self._on_tree_right_click)
 
+        # Двойной клик → просмотр
+        self._tree.bind("<Double-1>", lambda e: self._on_view_click())
+
+        self._configure_treeview_style()
 
     def _configure_treeview_style(self) -> None:
-        """Настроить стили для Treeview (светлая/тёмная тема)."""
         style = ttk.Style()
         style.theme_use("clam")
-
-        appearance = ctk.get_appearance_mode()
-
-        if appearance == "Dark":
-            bg_color = "#2b2b2b"
-            fg_color = "#ffffff"
-            field_bg = "#1e1e1e"
-            select_bg = "#1f538d"
-            select_fg = "#ffffff"
-        else:
-            bg_color = "#ffffff"
-            fg_color = "#000000"
-            field_bg = "#f0f0f0"
-            select_bg = "#0078d7"
-            select_fg = "#ffffff"
-
-        style.configure(
-            "Treeview",
-            background=bg_color,
-            foreground=fg_color,
-            fieldbackground=field_bg,
-            rowheight=25,
-        )
-        style.map(
-            "Treeview",
-            background=[("selected", select_bg)],
-            foreground=[("selected", select_fg)],
-        )
+        style.configure("Treeview", rowheight=28, font=("Segoe UI", 10))
+        style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
 
     # ------------------------------------------------------------------
-    # Обновление данных
+    # Sorting
+    # ------------------------------------------------------------------
+    def _on_heading_click(self, column: str) -> None:
+        """Сортировка по столбцу. Повторный клик — обратная сортировка."""
+        if self._sort_column == column:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_column = column
+            self._sort_reverse = False
+
+        self._populate_table(self._employees)
+        log_ui_event(self._logger, widget="EmployeeListWidget", event="SORT",
+                     data=f"column={column}, reverse={self._sort_reverse}")
+
+    def _get_sort_key(self, emp: EmployeeReadSchema) -> tuple:
+        """Ключ сортировки для сотрудника."""
+        key_map = {
+            "num":      0,  # Номер вычисляется после сортировки
+            "position": (emp.position or "").lower(),
+            "rank":     (emp.rank or "").lower(),
+            "name":     emp.display_name.lower(),
+            "status":   0 if emp.is_active else 1,
+        }
+        return key_map.get(self._sort_column, "")
+
+    # ------------------------------------------------------------------
+    # Column reordering via context menu
+    # ------------------------------------------------------------------
+    def _on_tree_right_click(self, event) -> None:
+        """Контекстное меню для перемещения столбцов."""
+        region = self._tree.identify_region(event.x, event.y)
+        if region != "heading":
+            return
+
+        col_id = self._tree.identify_column(event.x)  # "#1", "#2", ...
+        try:
+            idx = int(col_id.replace("#", "")) - 1
+        except ValueError:
+            return
+
+        if idx < 0 or idx >= len(self._columns):
+            return
+
+        self._header_menu.delete(0, "end")
+        current_name = self._columns[idx][1]
+
+        # Подменю «Переместить»
+        move_menu = Menu(self._header_menu, tearoff=0)
+        for target_idx, (_, target_name, _) in enumerate(self._columns):
+            if target_idx != idx:
+                label = f"{'↑' if target_idx < idx else '↓'} Перед «{target_name}»"
+                move_menu.add_command(
+                    label=label,
+                    command=lambda t=target_idx: self._move_column(idx, t),
+                )
+        self._header_menu.add_cascade(label=f"«{current_name}» → Переместить", menu=move_menu)
+        self._header_menu.post(event.x_root, event.y_root)
+
+    def _move_column(self, from_idx: int, to_idx: int) -> None:
+        """Переместить столбец и перерисовать таблицу."""
+        col = self._columns.pop(from_idx)
+        # Корректируем индекс вставки
+        if to_idx > from_idx:
+            to_idx -= 1
+        self._columns.insert(to_idx, col)
+
+        # Пересоздаём столбцы в Treeview
+        col_ids = [c[0] for c in self._columns]
+        self._tree["columns"] = col_ids
+        for col_id, heading, width in self._columns:
+            self._tree.heading(col_id, text=heading,
+                               command=lambda c=col_id: self._on_heading_click(c))
+            self._tree.column(col_id, width=width, minwidth=40)
+
+        self._populate_table(self._employees)
+        log_ui_event(self._logger, widget="EmployeeListWidget", event="COLUMN_REORDERED",
+                     data=f"order={[c[0] for c in self._columns]}")
+
+    # ------------------------------------------------------------------
+    # Data
     # ------------------------------------------------------------------
     def refresh(self) -> None:
-        """Обновить список сотрудников из контроллера."""
-        log_ui_event(
-            self._logger,
-            widget="EmployeeListWidget",
-            event="REFRESH_REQUESTED",
-            data="",
-        )
-
+        if not self._bridge.is_running():
+            return
         self._bridge.run(
             self._controller.get_all_employees(),
             on_success=self._populate_table,
             on_error=self._on_refresh_error,
         )
 
-
     def _populate_table(self, employees: list[EmployeeReadSchema]) -> None:
-        """Заполнить таблицу данными сотрудников с защитой от гонок инициализации."""
-        # ✅ Защита 1: Виджет уже уничтожен (например, при быстром закрытии окна)
         if not self.winfo_exists():
-            self._logger.debug("EmployeeListWidget: виджет уничтожён, пропуск обновления")
             return
-
-        # ✅ Защита 2: Treeview ещё не создан или удалён
         if not hasattr(self, '_tree') or self._tree is None:
-            self._logger.debug("EmployeeListWidget: Treeview не инициализирован, пропуск")
             return
 
         try:
-            # Очистка текущих данных
+            self._employees = employees
+
+            # Сортировка
+            sorted_emps = sorted(employees, key=self._get_sort_key, reverse=self._sort_reverse)
+
+            # Очистка
             for item in self._tree.get_children():
                 self._tree.delete(item)
 
-            # Сохраняем ссылку на новые данные
-            self._employees = employees
-
-            # Вставка новых записей
-            for idx, emp in enumerate(employees, start=1):
+            # Заполнение
+            for idx, emp in enumerate(sorted_emps, start=1):
                 status = "Активен" if emp.is_active else "В архиве"
-                self._tree.insert(
-                    "",
-                    "end",
-                    iid=str(emp.id),
-                    values=(
-                        idx,
-                        emp.display_name,
-                        emp.position or "",
-                        status,
-                    ),
-                )
+                values_map = {
+                    "num":      idx,
+                    "position": emp.position or "—",
+                    "rank":     emp.rank or "—",
+                    "name":     emp.display_name,
+                    "status":   status,
+                }
+                values = tuple(values_map.get(c[0], "") for c in self._columns)
+                self._tree.insert("", "end", iid=str(emp.id), values=values)
 
-            self._logger.debug(
-                "EmployeeListWidget: таблица обновлена, сотрудников: %d",
-                len(employees),
-            )
-            log_ui_event(
-                self._logger,
-                widget="EmployeeListWidget",
-                event="TABLE_POPULATED",
-                data=f"count={len(employees)}",
-            )
+            log_ui_event(self._logger, widget="EmployeeListWidget",
+                         event="TABLE_POPULATED", data=f"count={len(employees)}")
         except Exception as exc:
-            self._logger.error(
-                "EmployeeListWidget: критическая ошибка при заполнении таблицы: %s",
-                exc,
-                exc_info=True,
-            )
-
+            self._logger.error("EmployeeListWidget: ошибка заполнения таблицы: %s", exc, exc_info=True)
 
     def _on_refresh_error(self, exc: Exception) -> None:
-        """Обработать ошибку обновления списка."""
-        self._logger.exception("Failed to refresh employee list")
-        log_user_error(
-            self._logger,
-            action="REFRESH_EMPLOYEES",
-            error=f"Failed to refresh employee list: {exc}",
-        )
-        messagebox.showerror(
-            "Ошибка обновления",
-            f"Не удалось обновить список сотрудников:\n{exc}",
-            parent=self,
-        )
+        self._logger.error("Failed to load employees: %s", exc, exc_info=True)
+        log_user_error(self._logger, action="LOAD_EMPLOYEES", error=str(exc))
 
     # ------------------------------------------------------------------
-    # Получение выбранного сотрудника
+    # Selection helpers
     # ------------------------------------------------------------------
     def _get_selected_employee(self) -> Optional[EmployeeReadSchema]:
-        """Получить выбранного в таблице сотрудника."""
         selection = self._tree.selection()
         if not selection:
-            messagebox.showwarning(
-                "Не выбран сотрудник",
-                "Пожалуйста, выберите сотрудника из списка.",
-                parent=self,
-            )
+            messagebox.showinfo("Внимание", "Выберите сотрудника в таблице", parent=self)
             return None
-
-        employee_id = UUID(selection[0])
+        emp_id = UUID(selection[0])
         for emp in self._employees:
-            if emp.id == employee_id:
+            if emp.id == emp_id:
                 return emp
-
         return None
 
     # ------------------------------------------------------------------
-    # Создание сотрудника (делегирование координатору)
+    # Actions
     # ------------------------------------------------------------------
     def _on_create_click(self) -> None:
-        """Обработать нажатие кнопки 'Создать'."""
-        log_ui_event(
-            self._logger,
-            widget="EmployeeListWidget",
-            event="CREATE_CLICKED",
-            data="",
-        )
+        log_ui_event(self._logger, widget="EmployeeListWidget", event="CREATE_CLICKED")
         self._coordinator.open_create_dialog()
 
-    # ------------------------------------------------------------------
-    # Просмотр карточки (делегирование координатору)
-    # ------------------------------------------------------------------
     def _on_view_click(self) -> None:
-        """Обработать нажатие кнопки 'Просмотреть' или двойной клик."""
-        employee = self._get_selected_employee()
-        if not employee:
+        emp = self._get_selected_employee()
+        if emp is None:
             return
+        log_ui_event(self._logger, widget="EmployeeListWidget", event="VIEW_CLICKED",
+                     data=f"employee_id={emp.id}")
+        self._coordinator.open_card_dialog(emp)
 
-        log_ui_event(
-            self._logger,
-            widget="EmployeeListWidget",
-            event="VIEW_CLICKED",
-            data=f"employee_id={employee.id}",
-        )
-        self._coordinator.open_card_dialog(employee)
-
-    # ------------------------------------------------------------------
-    # Удаление сотрудника (прямой вызов контроллера)
-    # ------------------------------------------------------------------
-    def _on_delete_click(self) -> None:
-        """Обработать нажатие кнопки 'Удалить'."""
-        employee = self._get_selected_employee()
-        if not employee:
-            return
-
-        log_ui_event(
-            self._logger,
-            widget="EmployeeListWidget",
-            event="DELETE_CLICKED",
-            data=f"employee_id={employee.id}",
-        )
-
-        self._bridge.run(
-            self._controller.get_usage_info(employee.id),
-            on_success=lambda info: self._confirm_delete(employee, info.task_count),
-            on_error=self._on_delete_error,
-        )
-
-    def _confirm_delete(self, employee: EmployeeReadSchema, task_count: int) -> None:
-        """Показать диалог подтверждения удаления."""
-        if task_count > 0:
-            message = (
-                f"Сотрудник '{employee.display_name}' используется в {task_count} задач(ах).\n\n"
-                f"При удалении он будет исключён из всех задач (CASCADE).\n\n"
-                f"Вы уверены, что хотите удалить сотрудника?"
-            )
-        else:
-            message = (
-                f"Вы уверены, что хотите удалить сотрудника '{employee.display_name}'?\n\n"
-                f"Это действие необратимо."
-            )
-
-        confirmed = messagebox.askyesno(
-            "Подтверждение удаления",
-            message,
-            parent=self,
-        )
-
-        if confirmed:
-            self._bridge.run(
-                self._controller.delete_employee(employee.id),
-                on_success=lambda affected: self._on_delete_success(employee.id, affected),
-                on_error=self._on_delete_error,
-            )
-
-    def _on_delete_success(self, deleted_id: UUID, affected_tasks: int) -> None:
-        """Обработать успешное удаление сотрудника."""
-        log_user_action(
-            self._logger,
-            action="DELETE_EMPLOYEE",
-            details=f"Deleted employee {deleted_id}, detached from {affected_tasks} task(s)",
-        )
-        messagebox.showinfo(
-            "Успех",
-            f"Сотрудник успешно удалён.\nИсключён из {affected_tasks} задач(и).",
-            parent=self,
-        )
-        self.refresh()
-
-    def _on_delete_error(self, exc: Exception) -> None:
-        """Обработать ошибку удаления."""
-        self._logger.exception("Failed to delete employee")
-        log_user_error(
-            self._logger,
-            action="DELETE_EMPLOYEE",
-            error=f"Failed to delete employee: {exc}",
-        )
-        messagebox.showerror(
-            "Ошибка удаления",
-            f"Не удалось удалить сотрудника:\n{exc}",
-            parent=self,
-        )
-
-    # ------------------------------------------------------------------
-    # Архивация / Восстановление (прямой вызов контроллера)
-    # ------------------------------------------------------------------
     def _on_archive_click(self) -> None:
-        """Обработать нажатие кнопки 'Архивировать'."""
-        employee = self._get_selected_employee()
-        if not employee:
+        emp = self._get_selected_employee()
+        if emp is None:
             return
-
-        action = "восстановить" if not employee.is_active else "архивировать"
-        confirmed = messagebox.askyesno(
-            "Подтверждение",
-            f"Вы уверены, что хотите {action} сотрудника '{employee.display_name}'?",
-            parent=self,
-        )
-
-        if not confirmed:
-            return
-
-        log_ui_event(
-            self._logger,
-            widget="EmployeeListWidget",
-            event="ARCHIVE_CLICKED",
-            data=f"employee_id={employee.id}, current_status={employee.is_active}",
-        )
-
         self._bridge.run(
-            self._controller.toggle_active(employee.id),
+            self._controller.toggle_active(emp.id),
             on_success=self._on_archive_success,
             on_error=self._on_archive_error,
         )
 
     def _on_archive_success(self, updated: EmployeeReadSchema) -> None:
-        """Обработать успешное переключение статуса."""
-        status = "активирован" if updated.is_active else "архивирован"
-        log_user_action(
-            self._logger,
-            action="TOGGLE_ACTIVE",
-            details=f"Employee {updated.id} {status}",
-        )
-        messagebox.showinfo(
-            "Успех",
-            f"Сотрудник '{updated.display_name}' {status}.",
-            parent=self,
-        )
+        action = "ARCHIVE" if not updated.is_active else "RESTORE"
+        log_user_action(self._logger, action=f"{action}_EMPLOYEE",
+                        details=f"'{updated.display_name}' (ID: {updated.id})")
         self.refresh()
 
     def _on_archive_error(self, exc: Exception) -> None:
-        """Обработать ошибку переключения статуса."""
-        self._logger.exception("Failed to toggle active status")
-        log_user_error(
-            self._logger,
-            action="TOGGLE_ACTIVE",
-            error=f"Failed to toggle active status: {exc}",
-        )
-        messagebox.showerror(
-            "Ошибка",
-            f"Не удалось изменить статус сотрудника:\n{exc}",
-            parent=self,
+        self._logger.error("Archive toggle failed: %s", exc, exc_info=True)
+        messagebox.showerror("Ошибка", str(exc), parent=self)
+
+    def _on_delete_click(self) -> None:
+        emp = self._get_selected_employee()
+        if emp is None:
+            return
+        self._bridge.run(
+            self._controller.get_usage_info(emp.id),
+            on_success=lambda info: self._confirm_delete(emp, info.task_count),
+            on_error=lambda exc: messagebox.showerror("Ошибка", str(exc), parent=self),
         )
 
-    # ------------------------------------------------------------------
-    # Обновление списка
-    # ------------------------------------------------------------------
-    def _on_refresh_click(self) -> None:
-        """Обработать нажатие кнопки 'Обновить'."""
-        log_ui_event(
-            self._logger,
-            widget="EmployeeListWidget",
-            event="REFRESH_CLICKED",
-            data="",
+    def _confirm_delete(self, employee: EmployeeReadSchema, task_count: int) -> None:
+        msg = f"Удалить сотрудника «{employee.display_name}»?"
+        if task_count > 0:
+            msg += f"\n\n⚠ Сотрудник используется в {task_count} задач(ах).\nСвязи будут удалены."
+        if not messagebox.askyesno("Подтверждение удаления", msg, parent=self):
+            return
+        self._bridge.run(
+            self._controller.delete_employee(employee.id),
+            on_success=lambda affected: self._on_delete_success(employee.id, affected),
+            on_error=self._on_delete_error,
         )
+
+    def _on_delete_success(self, deleted_id: UUID, affected_tasks: int) -> None:
+        log_user_action(self._logger, action="DELETE_EMPLOYEE",
+                        details=f"ID: {deleted_id}, detached from {affected_tasks} task(s)")
+        self.refresh()
+
+    def _on_delete_error(self, exc: Exception) -> None:
+        self._logger.error("Delete failed: %s", exc, exc_info=True)
+        messagebox.showerror("Ошибка удаления", str(exc), parent=self)
+
+    def _on_refresh_click(self) -> None:
+        log_ui_event(self._logger, widget="EmployeeListWidget", event="REFRESH_CLICKED")
         self.refresh()

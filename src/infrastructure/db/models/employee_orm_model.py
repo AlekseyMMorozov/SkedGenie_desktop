@@ -39,6 +39,7 @@ class EmployeeORMModel(Base):
         middle_name: Отчество (опционально).
         display_name: Представление для графика (вычисляется в Domain).
         position: Должность.
+        rank: Звание (опционально).
         tab_number: Табельный номер (уникально, если не NULL).
         email: Электронная почта (уникально, если не NULL).
         phone: Телефон.
@@ -77,6 +78,10 @@ class EmployeeORMModel(Base):
     # Служебные данные
     position: Mapped[Optional[str]] = mapped_column(
         String(200),
+        nullable=True,
+    )
+    rank: Mapped[Optional[str]] = mapped_column(
+        String(100),
         nullable=True,
     )
     tab_number: Mapped[Optional[str]] = mapped_column(

@@ -72,6 +72,7 @@ class EmployeeSQLAlchemyRepository(IEmployeeRepository):
             middle_name=domain.middle_name,
             display_name=domain.display_name,
             position=domain.position,
+            rank=domain.rank,
             tab_number=domain.tab_number,
             email=domain.email,
             phone=domain.phone,
@@ -105,6 +106,7 @@ class EmployeeSQLAlchemyRepository(IEmployeeRepository):
             # и сохранён в БД.
             display_name=orm.display_name,
             position=orm.position,
+            rank=orm.rank,
             tab_number=orm.tab_number,
             email=orm.email,
             phone=orm.phone,
@@ -240,6 +242,7 @@ class EmployeeSQLAlchemyRepository(IEmployeeRepository):
             orm.middle_name = employee.middle_name
             orm.display_name = employee.display_name
             orm.position = employee.position
+            orm.rank = employee.rank
             orm.tab_number = employee.tab_number
             orm.email = employee.email
             orm.phone = employee.phone

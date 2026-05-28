@@ -57,6 +57,10 @@ class EmployeeCreateSchema(BaseModel):
         default=None, max_length=200,
         description="Должность",
     )
+    rank: Optional[str] = Field(
+        default=None, max_length=100,
+        description="Звание",
+    )
     tab_number: Optional[str] = Field(
         default=None, max_length=50,
         description="Табельный номер",
@@ -86,7 +90,7 @@ class EmployeeCreateSchema(BaseModel):
         description="ID видов задействований, к которым допущен сотрудник",
     )
 
-    # ✅ ДОБАВЛЕНО: статус активности (новый сотрудник активен по умолчанию)
+    # Статус активности (новый сотрудник активен по умолчанию)
     is_active: bool = Field(
         default=True,
         description="Активен ли сотрудник (по умолчанию True)",
@@ -174,6 +178,7 @@ class EmployeeUpdateSchema(BaseModel):
     middle_name: Optional[str] = Field(default=None, max_length=100)
 
     position: Optional[str] = Field(default=None, max_length=200)
+    rank: Optional[str] = Field(default=None, max_length=100)
     tab_number: Optional[str] = Field(default=None, max_length=50)
     email: Optional[str] = Field(default=None, max_length=200)
     phone: Optional[str] = Field(default=None, max_length=50)
@@ -275,6 +280,7 @@ class EmployeeReadSchema(BaseModel):
     )
 
     position: Optional[str] = None
+    rank: Optional[str] = None
     tab_number: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None

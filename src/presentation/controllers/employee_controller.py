@@ -26,7 +26,6 @@ from typing import List, Optional
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
-from src.presentation.controllers.display_name_resolver import resolve_display_names
 
 from src.application.interfaces.employee_repository_interface import IEmployeeRepository
 from src.application.schemas.employee_schemas import (
@@ -38,6 +37,7 @@ from src.application.services.employee_link_service import EmployeeLinkService, 
 from src.core.logging_config import log_user_action, log_user_error
 from src.domain.employees.employee_exceptions import DuplicateEmployeeError, EmployeeDomainError
 from src.domain.employees.employee_model import Employee
+from src.presentation.controllers.display_name_resolver import resolve_display_names
 
 
 class EmployeeController:
@@ -189,6 +189,7 @@ class EmployeeController:
                 first_name=schema.first_name,
                 middle_name=schema.middle_name,
                 position=schema.position,
+                rank=schema.rank,
                 tab_number=schema.tab_number,
                 email=schema.email,
                 phone=schema.phone,
@@ -484,6 +485,10 @@ class EmployeeController:
     def _to_read_schema(self, employee: Employee) -> EmployeeReadSchema:
         """Преобразовать Domain-модель Employee в EmployeeReadSchema.
 
+        Заполняет вычисляемое поле ``full_name`` из Domain-метода
+        ``get_full_name()``. Поле ``display_name`` берётся напрямую
+        из модели (может быть расширено через resolve_display_names).
+
         Args:
             employee: Domain-объект.
 
@@ -496,7 +501,9 @@ class EmployeeController:
             first_name=employee.first_name,
             middle_name=employee.middle_name,
             display_name=employee.display_name,
+            full_name=employee.get_full_name(),
             position=employee.position,
+            rank=employee.rank,
             tab_number=employee.tab_number,
             email=employee.email,
             phone=employee.phone,
@@ -507,4 +514,3 @@ class EmployeeController:
             created_at=employee.created_at,
             updated_at=employee.updated_at,
         )
-

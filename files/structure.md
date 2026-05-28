@@ -36,7 +36,6 @@ SkedGenie_desktop/
         employee_controller.py
         task_controller.py
       dialogs/
-        employee_card_dialog.py
         employee_dialog.py
         task_dialog.py
       widgets/
@@ -52,6 +51,7 @@ SkedGenie_desktop/
       font_manager.py
       main_window.py
       settings.py
+  __init__.py
   main.py
 
 # Содержание файлов
@@ -356,13 +356,13 @@ def _expand_conflicts(group: List[Employee]) -> List[Employee]
 - from typing import List, Optional
 - from uuid import UUID
 - from sqlalchemy.exc import IntegrityError
-- from src.presentation.controllers.display_name_resolver import resolve_display_names
 - from src.application.interfaces.employee_repository_interface import IEmployeeRepository
 - from src.application.schemas.employee_schemas import EmployeeCreateSchema, EmployeeReadSchema, EmployeeUpdateSchema
 - from src.application.services.employee_link_service import EmployeeLinkService, EmployeeUsageInfo
 - from src.core.logging_config import log_user_action, log_user_error
 - from src.domain.employees.employee_exceptions import DuplicateEmployeeError, EmployeeDomainError
 - from src.domain.employees.employee_model import Employee
+- from src.presentation.controllers.display_name_resolver import resolve_display_names
 ## Классы
 class EmployeeController:
   def __init__(self, employee_repository: IEmployeeRepository, link_service: EmployeeLinkService, logger: logging.Logger) -> None
@@ -398,37 +398,11 @@ class TaskController:
   async def update_task(self, task_id: UUID, schema: TaskUpdateSchema) -> TaskReadSchema
   async def delete_task(self, task_id: UUID) -> None
 
-# employee_card_dialog.py
-## Импорты
-- from __future__ import annotations
-- import logging
-- from datetime import date
-- from tkinter import messagebox
-- from typing import Callable, Optional
-- from uuid import UUID
-- import customtkinter as ctk
-- from pydantic import ValidationError
-- from src.application.schemas.employee_schemas import EmployeeReadSchema, EmployeeUpdateSchema
-- from src.core.logging_config import log_ui_event
-- from src.presentation.font_manager import get_font_manager
-- from src.presentation.widgets.employee_card_sections import EditableWidget, create_contact_section, create_engagement_section, create_header_section, create_metadata_section, create_notes_section, create_personal_section, create_work_section
-## Классы
-class EmployeeCardDialog(ctk.CTkToplevel):
-  def __init__(self, master: ctk.CTk, logger: logging.Logger, employee: EmployeeReadSchema, on_save: Callable[[UUID, EmployeeUpdateSchema], None], mode: str, **kwargs) -> None
-  def _setup_window(self) -> None
-  def _build_ui(self) -> None
-  def _create_action_buttons(self, button_frame: ctk.CTkFrame) -> None
-  def _switch_mode(self, new_mode: str) -> None
-  def _on_edit_click(self) -> None
-  def _on_cancel(self) -> None
-  def _on_save_click(self) -> None
-  def _collect_editable_data(self) -> dict
-  def _on_close(self) -> None
-
 # employee_dialog.py
 ## Импорты
 - from __future__ import annotations
 - import logging
+- import re
 - from datetime import date
 - from tkinter import messagebox
 - from typing import Callable, Optional, Union
@@ -439,14 +413,20 @@ class EmployeeCardDialog(ctk.CTkToplevel):
 - from src.core.logging_config import log_ui_event
 ## Классы
 class EmployeeDialog(ctk.CTkToplevel):
-  def __init__(self, master: ctk.CTk, logger: logging.Logger, on_save: Callable[[Optional[UUID], Union[EmployeeCreateSchema, EmployeeUpdateSchema]], None], employee: Optional[EmployeeReadSchema], prefill_data: Optional[dict], **kwargs) -> None
+  def __init__(self, master: ctk.CTk, logger: logging.Logger, on_save: Callable[[Optional[UUID], Union[EmployeeCreateSchema, EmployeeUpdateSchema]], None], mode: str, employee: Optional[EmployeeReadSchema], prefill_data: Optional[dict], **kwargs) -> None
   def _setup_window(self) -> None
   def _create_widgets(self) -> None
+  def _add_field(self, parent: ctk.CTkFrame, label: str, placeholder: str) -> ctk.CTkEntry
+  @staticmethod def _auto_tab(event, current_entry: ctk.CTkEntry, next_entry: ctk.CTkEntry, max_len: int) -> None
+  @staticmethod def _pad_date_field(entry: ctk.CTkEntry, expected_len: int) -> None
+  def _parse_birth_date(self) -> Optional[date]
+  def _apply_mode(self) -> None
+  def _on_edit_click(self) -> None
+  def _on_primary_click(self) -> None
   def _populate_fields(self) -> None
   def _populate_from_employee(self) -> None
   def _populate_from_prefill(self) -> None
   def _on_save_click(self) -> None
-  def _parse_birth_date(self) -> Optional[date]
   def _on_cancel(self) -> None
 
 # task_dialog.py
@@ -502,7 +482,6 @@ def create_metadata_section(parent: ctk.CTkFrame, employee: EmployeeReadSchema, 
 - from src.domain.employees.employee_exceptions import DuplicateEmployeeError
 - from src.presentation.async_bridge import AsyncBridge
 - from src.presentation.controllers.employee_controller import EmployeeController
-- from src.presentation.dialogs.employee_card_dialog import EmployeeCardDialog
 - from src.presentation.dialogs.employee_dialog import EmployeeDialog
 ## Классы
 class EmployeeDialogCoordinator:
@@ -523,8 +502,8 @@ class EmployeeDialogCoordinator:
 ## Импорты
 - from __future__ import annotations
 - import logging
-- from tkinter import messagebox, ttk
-- from typing import Optional
+- from tkinter import Menu, messagebox, ttk
+- from typing import List, Optional
 - from uuid import UUID
 - import customtkinter as ctk
 - from src.application.schemas.employee_schemas import EmployeeReadSchema
@@ -537,19 +516,23 @@ class EmployeeListWidget(ctk.CTkFrame):
   def __init__(self, master: ctk.CTk, controller: EmployeeController, bridge: AsyncBridge, logger: logging.Logger, **kwargs) -> None
   def _create_widgets(self) -> None
   def _configure_treeview_style(self) -> None
+  def _on_heading_click(self, column: str) -> None
+  def _get_sort_key(self, emp: EmployeeReadSchema) -> tuple
+  def _on_tree_right_click(self, event) -> None
+  def _move_column(self, from_idx: int, to_idx: int) -> None
   def refresh(self) -> None
   def _populate_table(self, employees: list[EmployeeReadSchema]) -> None
   def _on_refresh_error(self, exc: Exception) -> None
   def _get_selected_employee(self) -> Optional[EmployeeReadSchema]
   def _on_create_click(self) -> None
   def _on_view_click(self) -> None
+  def _on_archive_click(self) -> None
+  def _on_archive_success(self, updated: EmployeeReadSchema) -> None
+  def _on_archive_error(self, exc: Exception) -> None
   def _on_delete_click(self) -> None
   def _confirm_delete(self, employee: EmployeeReadSchema, task_count: int) -> None
   def _on_delete_success(self, deleted_id: UUID, affected_tasks: int) -> None
   def _on_delete_error(self, exc: Exception) -> None
-  def _on_archive_click(self) -> None
-  def _on_archive_success(self, updated: EmployeeReadSchema) -> None
-  def _on_archive_error(self, exc: Exception) -> None
   def _on_refresh_click(self) -> None
 
 # log_panel.py
@@ -731,6 +714,7 @@ def set_font_manager(manager: FontManager) -> None
 - from src.presentation.widgets.navigation_sidebar import NavigationSidebar
 - from src.presentation.widgets.page_factory import PageFactory
 - from src.presentation.widgets.task_list_widget import TaskListWidget
+- import os
 ## Классы
 class MainWindow(ctk.CTk):
   def __init__(self, task_controller: TaskController, logger: logging.Logger, settings: Optional[Settings], employee_controller: Optional[EmployeeController], **kwargs) -> None
@@ -757,6 +741,7 @@ class MainWindow(ctk.CTk):
   def _on_closing(self) -> None
   def run(self) -> None
   def _initial_load(self) -> None
+  def _do_initial_load(self) -> None
 
 # settings.py
 ## Импорты
@@ -779,6 +764,10 @@ class Settings:
   def update_appearance_mode(self, mode: str) -> None
   def update_color_theme(self, theme: str) -> None
 
+# __init__.py
+## Импорты
+- import tkinter
+
 # main.py
 ## Импорты
 - from __future__ import annotations
@@ -797,6 +786,7 @@ class Settings:
 - from src.presentation.main_window import MainWindow
 - from src.presentation.settings import Settings
 - from src.presentation.settings import AppSettings
+- import os
 ## Функции
 def main() -> None
 def test_gui_update()

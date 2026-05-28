@@ -41,7 +41,7 @@ from src.presentation.settings import Settings
 
 # Константы
 DATABASE_URL: str = "sqlite+aiosqlite:///./data/skedgenie.db"
-DEV_RESET_DB: bool = True  # True для разработки (пересоздание БД при каждом запуске)
+DEV_RESET_DB: bool = False  # True для разработки (пересоздание БД при каждом запуске)
 SETTINGS_PATH: Path = Path("data/settings.json")
 
 
