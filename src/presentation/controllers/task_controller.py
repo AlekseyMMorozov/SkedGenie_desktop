@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -137,6 +137,97 @@ class TaskController:
                 f"ID={task_id}, Непредвиденная ошибка: {exc}",
             )
             raise
+
+    async def get_tasks_by_employee(self, employee_id: UUID) -> List[TaskReadSchema]:
+        """Получить список задач, в которых участвует сотрудник.
+
+        Args:
+            employee_id: UUID сотрудника.
+
+        Returns:
+            Список задач :class:`TaskReadSchema`.
+        """
+        self._logger.debug(
+            "TaskController: запрос задач для сотрудника ID=%s",
+            employee_id,
+        )
+        try:
+            tasks = await self._repository.get_tasks_by_employee(employee_id)
+            result = [TaskReadSchema.model_validate(task) for task in tasks]
+            self._logger.debug(
+                "TaskController: получено %d задач для сотрудника",
+                len(result),
+            )
+            return result
+        except SQLAlchemyError as exc:
+            log_user_error(
+                self._logger,
+                "Получение задач сотрудника",
+                f"ID={employee_id}, Ошибка БД: {exc}",
+            )
+            raise
+        except Exception as exc:
+            self._logger.error(
+                "TaskController: непредвиденная ошибка при получении задач сотрудника: %s",
+                exc,
+                exc_info=True,
+            )
+            log_user_error(
+                self._logger,
+                "Получение задач сотрудника",
+                f"ID={employee_id}, Непредвиденная ошибка: {exc}",
+            )
+            raise
+
+
+    async def add_employee_to_task(self, employee_id: UUID, task_id: UUID) -> bool:
+        """Добавить сотрудника в задачу.
+
+        Args:
+            employee_id: UUID сотрудника.
+            task_id: UUID задачи.
+
+        Returns:
+            True, если сотрудник был добавлен, False если уже был в задаче.
+        """
+        self._logger.debug(
+            "TaskController: добавление сотрудника %s в задачу %s",
+            employee_id, task_id
+        )
+        try:
+            result = await self._repository.add_employee_to_task(employee_id, task_id)
+            if result:
+                log_user_action(
+                    self._logger,
+                    "Сотрудник добавлен в задачу",
+                    f"Employee: {employee_id}, Task: {task_id}"
+                )
+            else:
+                self._logger.debug(
+                    "TaskController: сотрудник %s уже был в задаче %s",
+                    employee_id, task_id
+                )
+            return result
+        except SQLAlchemyError as exc:
+            log_user_error(
+                self._logger,
+                "Добавление сотрудника в задачу",
+                f"Employee: {employee_id}, Task: {task_id}, Error: {exc}"
+            )
+            raise
+        except Exception as exc:
+            self._logger.error(
+                "TaskController: непредвиденная ошибка при добавлении сотрудника: %s",
+                exc,
+                exc_info=True,
+            )
+            log_user_error(
+                self._logger,
+                "Добавление сотрудника в задачу",
+                f"Employee: {employee_id}, Task: {task_id}, Error: {exc}"
+            )
+            raise
+
 
     # ------------------------------------------------------------------
     # Create operation

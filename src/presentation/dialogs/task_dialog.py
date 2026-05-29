@@ -16,10 +16,11 @@ from __future__ import annotations
 import logging
 from datetime import date
 from tkinter import messagebox
-from typing import Callable, Optional, Union
+from typing import Callable, List, Optional, Union
 
 import customtkinter as ctk
 
+from src.application.schemas.employee_schemas import EmployeeReadSchema
 from src.application.schemas.task_schemas import (
     TaskCreateSchema,
     TaskReadSchema,
@@ -27,6 +28,7 @@ from src.application.schemas.task_schemas import (
 )
 from src.core.logging_config import log_ui_event, log_user_action
 from src.domain.tasks.planning_task_model import PeriodType
+from src.presentation.dialogs.employee_select_dialog import EmployeeSelectDialog
 
 
 class TaskDialog(ctk.CTkToplevel):
@@ -39,18 +41,21 @@ class TaskDialog(ctk.CTkToplevel):
         _is_edit_mode: Флаг режима редактирования.
         _name_entry: Поле ввода названия.
         _period_combobox: Выпадающий список типов периода.
+        _employee_ids: Текущий список ID сотрудников, привязанных к задаче.
+        _available_employees: Список всех доступных сотрудников для выбора.
     """
 
     def __init__(
-        self,
-        master: ctk.CTk,
-        logger: logging.Logger,
-        on_save: Callable[
-            [Optional, Union[TaskCreateSchema, TaskUpdateSchema]],
-            None,
-        ],
-        task: Optional[TaskReadSchema] = None,
-        **kwargs,
+            self,
+            master: ctk.CTk,
+            logger: logging.Logger,
+            on_save: Callable[
+                [Optional, Union[TaskCreateSchema, TaskUpdateSchema]],
+                None,
+            ],
+            task: Optional[TaskReadSchema] = None,
+            available_employees: Optional[List[EmployeeReadSchema]] = None,
+            **kwargs,
     ) -> None:
         """Инициализация диалога задачи.
 
@@ -63,6 +68,7 @@ class TaskDialog(ctk.CTkToplevel):
                 ``task_id`` — UUID задачи, ``schema`` — :class:`TaskUpdateSchema`.
             task: Существующая задача для редактирования. Если ``None`` —
                 режим создания новой задачи.
+            available_employees: Список всех активных сотрудников для выбора.
             **kwargs: Дополнительные параметры для ``CTkToplevel``.
         """
         super().__init__(master, **kwargs)
@@ -70,6 +76,13 @@ class TaskDialog(ctk.CTkToplevel):
         self._on_save = on_save
         self._task = task
         self._is_edit_mode = task is not None
+        self._available_employees = available_employees or []
+
+        # Инициализация списка сотрудников
+        if self._is_edit_mode and task and task.employee_ids:
+            self._employee_ids = list(task.employee_ids)
+        else:
+            self._employee_ids = []
 
         self._setup_window()
         self._create_widgets()
@@ -88,7 +101,7 @@ class TaskDialog(ctk.CTkToplevel):
             else "Создание задачи планирования"
         )
         self.title(title)
-        self.geometry("500x400")
+        self.geometry("500x450")  # Увеличил высоту для кнопки сотрудников
         self.resizable(False, False)
 
         self.transient(self.master)
@@ -162,22 +175,29 @@ class TaskDialog(ctk.CTkToplevel):
         self._period_combobox.pack(fill="x", **padding)
 
         # --------------------------------------------------------------
-        # Кнопки-заглушки (сотрудники, задействования)
+        # Кнопки управления сотрудниками
+        # --------------------------------------------------------------
+        emp_frame = ctk.CTkFrame(self, fg_color="transparent")
+        emp_frame.pack(fill="x", **padding)
+
+        ctk.CTkButton(
+            emp_frame,
+            text=f"Сотрудники ({len(self._employee_ids)})",
+            command=self._on_add_employees,
+            anchor="w"
+        ).pack(fill="x")
+
+        # --------------------------------------------------------------
+        # Кнопки-заглушки (задействования)
         # --------------------------------------------------------------
         stubs_frame = ctk.CTkFrame(self, fg_color="transparent")
         stubs_frame.pack(fill="x", **padding)
 
         ctk.CTkButton(
             stubs_frame,
-            text="Добавить сотрудников",
-            command=self._on_add_employees,
-        ).pack(side="left", expand=True, fill="x", padx=(0, 5))
-
-        ctk.CTkButton(
-            stubs_frame,
             text="Добавить задействования",
             command=self._on_add_engagements,
-        ).pack(side="left", expand=True, fill="x", padx=(5, 0))
+        ).pack(fill="x")
 
         # --------------------------------------------------------------
         # Кнопки управления
@@ -203,13 +223,35 @@ class TaskDialog(ctk.CTkToplevel):
     # Обработчики событий
     # ------------------------------------------------------------------
     def _on_add_employees(self) -> None:
-        """Заглушка: 'Добавить сотрудников'."""
+        """Открытие диалога выбора сотрудников."""
         log_ui_event(self._logger, "TaskDialog.btn_add_employees", "click")
-        messagebox.showinfo(
-            "В разработке",
-            "Функция добавления сотрудников будет реализована позже.",
-            parent=self,
+
+        if not self._available_employees:
+            messagebox.showinfo(
+                "Нет сотрудников",
+                "Список сотрудников пуст. Сначала добавьте сотрудников в систему.",
+                parent=self,
+            )
+            return
+
+        dialog = EmployeeSelectDialog(
+            master=self,
+            logger=self._logger,
+            employees=self._available_employees,
+            selected_ids=self._employee_ids,
         )
+        self.wait_window(dialog)
+
+        result = dialog.get_result()
+        if result is not None:
+            self._employee_ids = result
+            # Обновляем текст кнопки
+            for widget in self.winfo_children():
+                if isinstance(widget, ctk.CTkFrame):
+                    for child in widget.winfo_children():
+                        if isinstance(child, ctk.CTkButton) and child.cget("text").startswith("Сотрудники"):
+                            child.configure(text=f"Сотрудники ({len(self._employee_ids)})")
+                            break
 
     def _on_add_engagements(self) -> None:
         """Заглушка: 'Добавить задействования'."""
@@ -261,9 +303,14 @@ class TaskDialog(ctk.CTkToplevel):
 
         # Проверка: реально ли изменились данные при редактировании
         if self._is_edit_mode and self._task is not None:
+            # Сравниваем основные поля. employee_ids сравниваем отдельно, если нужно
+            # Для простоты, если изменились только сотрудники, считаем изменением
+            employees_changed = set(self._employee_ids) != set(self._task.employee_ids or [])
+
             if (
-                name == self._task.name
-                and period_type.value == self._task.period_type
+                    name == self._task.name
+                    and period_type.value == self._task.period_type
+                    and not employees_changed
             ):
                 self._logger.debug(
                     "TaskDialog: данные не изменились, закрытие без сохранения",
@@ -277,23 +324,24 @@ class TaskDialog(ctk.CTkToplevel):
                 id=self._task.id,
                 name=name,
                 period_type=period_type,
+                employee_ids=self._employee_ids if self._employee_ids else None,
             )
             action_name = "Редактирование задачи (диалог)"
             action_details = (
                 f"ID: {self._task.id}, Новое имя: {name}, "
-                f"Период: {period_type.value}"
+                f"Период: {period_type.value}, Сотрудников: {len(self._employee_ids)}"
             )
         else:
             schema = TaskCreateSchema(
                 name=name,
                 period_type=period_type,
                 anchor_date=date.today(),
-                employee_ids=[],
+                employee_ids=self._employee_ids if self._employee_ids else None,
                 duty_type_ids=[],
                 reference_id=None,
             )
             action_name = "Создание задачи (диалог)"
-            action_details = f"Название: {name}, Период: {period_type.value}"
+            action_details = f"Название: {name}, Период: {period_type.value}, Сотрудников: {len(self._employee_ids)}"
 
         log_user_action(self._logger, action_name, action_details)
 

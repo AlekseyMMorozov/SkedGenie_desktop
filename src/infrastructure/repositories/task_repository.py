@@ -103,8 +103,8 @@ class TaskSQLAlchemyRepository(ITaskRepository):
 
     @staticmethod
     def _remove_employee_from_orm(
-        orm: TaskORMModel,
-        employee_id: UUID,
+            orm: TaskORMModel,
+            employee_id: UUID,
     ) -> bool:
         """Удаляет UUID сотрудника из JSON-поля ``employee_ids`` ORM-объекта.
 
@@ -150,9 +150,9 @@ class TaskSQLAlchemyRepository(ITaskRepository):
             return [self._to_domain(orm) for orm in orm_list]
 
     async def exists_by_name(
-        self,
-        name: str,
-        exclude_id: UUID | None = None,
+            self,
+            name: str,
+            exclude_id: UUID | None = None,
     ) -> bool:
         """Проверить существование задачи с указанным названием."""
         async with self._session_factory() as session:
@@ -245,9 +245,9 @@ class TaskSQLAlchemyRepository(ITaskRepository):
             return removed_count
 
     async def remove_employee_from_task(
-        self,
-        employee_id: UUID,
-        task_id: UUID,
+            self,
+            employee_id: UUID,
+            task_id: UUID,
     ) -> bool:
         """Удалить сотрудника из конкретной задачи."""
         async with self._session_factory() as session:
@@ -265,3 +265,93 @@ class TaskSQLAlchemyRepository(ITaskRepository):
             if removed:
                 await session.commit()
             return removed
+
+    @staticmethod
+    def _add_employee_to_orm(
+        orm: TaskORMModel,
+        employee_id: UUID,
+    ) -> bool:
+        """Добавляет UUID сотрудника в JSON-поле ``employee_ids`` ORM-объекта.
+
+        Args:
+            orm: ORM-модель задачи (модифицируется на месте).
+            employee_id: UUID сотрудника.
+
+        Returns:
+            ``True``, если сотрудник был успешно добавлен;
+            ``False``, если он уже был в списке.
+        """
+        try:
+            ids: list[str] = json.loads(orm.employee_ids or "[]")
+        except (json.JSONDecodeError, TypeError):
+            ids = []
+
+        target = str(employee_id)
+        if target in ids:
+            return False
+
+        ids.append(target)
+        orm.employee_ids = json.dumps(ids)
+        orm.updated_at = datetime.utcnow()
+        return True
+
+    async def add_employee_to_task(
+        self,
+        employee_id: UUID,
+        task_id: UUID,
+    ) -> bool:
+        """Добавить сотрудника в конкретную задачу.
+
+        Args:
+            employee_id: UUID сотрудника.
+            task_id: UUID задачи.
+
+        Returns:
+            ``True``, если сотрудник был успешно добавлен;
+            ``False``, если он уже был в задаче.
+
+        Raises:
+            ValueError: Если задача с указанным ID не найдена.
+        """
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(TaskORMModel).where(TaskORMModel.id == task_id)
+            )
+            orm = result.scalar_one_or_none()
+
+            if orm is None:
+                raise ValueError(f"Задача с ID={task_id} не найдена")
+
+            added = self._add_employee_to_orm(orm, employee_id)
+            if added:
+                await session.commit()
+            return added
+
+    async def get_tasks_by_employee(self, employee_id: UUID) -> List[PlanningTask]:
+        """Получить список задач, в которых участвует сотрудник.
+
+        Реализовано через загрузку всех задач и фильтрацию в Python,
+        аналогично другим методам работы со связями.
+
+        Args:
+            employee_id: UUID сотрудника.
+
+        Returns:
+            Список задач :class:`PlanningTask`.
+        """
+        async with self._session_factory() as session:
+            result = await session.execute(select(TaskORMModel))
+            orm_list = result.scalars().all()
+
+            tasks = []
+            target = str(employee_id)
+            for orm in orm_list:
+                try:
+                    ids: list[str] = json.loads(orm.employee_ids or "[]")
+                except (json.JSONDecodeError, TypeError):
+                    continue
+
+                if target in ids:
+                    tasks.append(self._to_domain(orm))
+
+            return tasks

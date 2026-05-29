@@ -37,6 +37,8 @@ SkedGenie_desktop/
         task_controller.py
       dialogs/
         employee_dialog.py
+        employee_select_dialog.py
+        employee_tasks_dialog.py
         task_dialog.py
       widgets/
         employee_card_sections.py
@@ -46,6 +48,7 @@ SkedGenie_desktop/
         main_menu.py
         navigation_sidebar.py
         page_factory.py
+        task_dialog_coordinator.py
         task_list_widget.py
       async_bridge.py
       font_manager.py
@@ -92,6 +95,8 @@ class ITaskRepository(ABC):
   @abstractmethod async def count_tasks_using_employee(self, employee_id: UUID) -> int
   @abstractmethod async def remove_employee_from_all_tasks(self, employee_id: UUID) -> int
   @abstractmethod async def remove_employee_from_task(self, employee_id: UUID, task_id: UUID) -> bool
+  @abstractmethod async def add_employee_to_task(self, employee_id: UUID, task_id: UUID) -> bool
+  @abstractmethod async def get_tasks_by_employee(self, employee_id: UUID) -> List[PlanningTask]
 
 # employee_schemas.py
 ## Импорты
@@ -329,6 +334,9 @@ class TaskSQLAlchemyRepository(ITaskRepository):
   async def count_tasks_using_employee(self, employee_id: UUID) -> int
   async def remove_employee_from_all_tasks(self, employee_id: UUID) -> int
   async def remove_employee_from_task(self, employee_id: UUID, task_id: UUID) -> bool
+  @staticmethod def _add_employee_to_orm(orm: TaskORMModel, employee_id: UUID) -> bool
+  async def add_employee_to_task(self, employee_id: UUID, task_id: UUID) -> bool
+  async def get_tasks_by_employee(self, employee_id: UUID) -> List[PlanningTask]
 
 # display_name_resolver.py
 ## Импорты
@@ -381,7 +389,7 @@ class EmployeeController:
 ## Импорты
 - from __future__ import annotations
 - import logging
-- from typing import Optional
+- from typing import List, Optional
 - from uuid import UUID
 - from sqlalchemy.exc import SQLAlchemyError
 - from src.application.interfaces.task_repository_interface import ITaskRepository
@@ -394,6 +402,8 @@ class TaskController:
   def __init__(self, repository: ITaskRepository, logger: logging.Logger) -> None
   async def get_all_tasks(self) -> list[TaskReadSchema]
   async def get_task_by_id(self, task_id: UUID) -> Optional[TaskReadSchema]
+  async def get_tasks_by_employee(self, employee_id: UUID) -> List[TaskReadSchema]
+  async def add_employee_to_task(self, employee_id: UUID, task_id: UUID) -> bool
   async def create_task(self, schema: TaskCreateSchema) -> TaskReadSchema
   async def update_task(self, task_id: UUID, schema: TaskUpdateSchema) -> TaskReadSchema
   async def delete_task(self, task_id: UUID) -> None
@@ -413,7 +423,7 @@ class TaskController:
 - from src.core.logging_config import log_ui_event
 ## Классы
 class EmployeeDialog(ctk.CTkToplevel):
-  def __init__(self, master: ctk.CTk, logger: logging.Logger, on_save: Callable[[Optional[UUID], Union[EmployeeCreateSchema, EmployeeUpdateSchema]], None], mode: str, employee: Optional[EmployeeReadSchema], prefill_data: Optional[dict], **kwargs) -> None
+  def __init__(self, master: ctk.CTk, logger: logging.Logger, on_save: Callable[[Optional[UUID], Union[EmployeeCreateSchema, EmployeeUpdateSchema]], None], mode: str, employee: Optional[EmployeeReadSchema], prefill_data: Optional[dict], on_view_tasks: Optional[Callable[[EmployeeReadSchema], None]], **kwargs) -> None
   def _setup_window(self) -> None
   def _create_widgets(self) -> None
   def _add_field(self, parent: ctk.CTkFrame, label: str, placeholder: str) -> ctk.CTkEntry
@@ -421,6 +431,7 @@ class EmployeeDialog(ctk.CTkToplevel):
   @staticmethod def _pad_date_field(entry: ctk.CTkEntry, expected_len: int) -> None
   def _parse_birth_date(self) -> Optional[date]
   def _apply_mode(self) -> None
+  def _on_view_tasks_click(self) -> None
   def _on_edit_click(self) -> None
   def _on_primary_click(self) -> None
   def _populate_fields(self) -> None
@@ -429,20 +440,68 @@ class EmployeeDialog(ctk.CTkToplevel):
   def _on_save_click(self) -> None
   def _on_cancel(self) -> None
 
+# employee_select_dialog.py
+## Импорты
+- from __future__ import annotations
+- import logging
+- from typing import List, Optional
+- from uuid import UUID
+- import customtkinter as ctk
+- from tkinter import ttk
+- from src.application.schemas.employee_schemas import EmployeeReadSchema
+- from src.core.logging_config import log_ui_event
+## Классы
+class EmployeeSelectDialog(ctk.CTkToplevel):
+  def __init__(self, master: ctk.CTk, logger: logging.Logger, employees: List[EmployeeReadSchema], selected_ids: Optional[List[UUID]], **kwargs) -> None
+  def _setup_window(self) -> None
+  def _create_widgets(self) -> None
+  def _on_tree_click(self, event) -> None
+  def _on_confirm(self) -> None
+  def _on_cancel(self) -> None
+  def get_result(self) -> Optional[List[UUID]]
+
+# employee_tasks_dialog.py
+## Импорты
+- from __future__ import annotations
+- import logging
+- from tkinter import Menu, messagebox, ttk
+- from typing import Callable, List, Optional
+- from uuid import UUID
+- import customtkinter as ctk
+- from src.application.schemas.task_schemas import TaskReadSchema
+- from src.core.logging_config import log_ui_event, log_user_action
+- from src.domain.tasks.planning_task_model import PERIOD_TYPE_RU
+## Классы
+class EmployeeTasksDialog(ctk.CTkToplevel):
+  def __init__(self, master: ctk.CTk, logger: logging.Logger, employee_id: UUID, employee_name: str, tasks: List[TaskReadSchema], on_remove_from_task: Callable[[UUID, UUID], None], on_add_to_task: Optional[Callable[[UUID], None]], **kwargs) -> None
+  def _setup_window(self) -> None
+  def _create_widgets(self) -> None
+  def _on_heading_click(self, column: str) -> None
+  def _get_sort_key(self, task: TaskReadSchema) -> tuple
+  def _on_tree_right_click(self, event) -> None
+  def _move_column(self, from_idx: int, to_idx: int) -> None
+  def _populate_table(self) -> None
+  def _on_add_click(self) -> None
+  def _on_remove_click(self) -> None
+  def remove_task_from_list(self, task_id: UUID) -> None
+  def add_task_to_list(self, task: TaskReadSchema) -> None
+
 # task_dialog.py
 ## Импорты
 - from __future__ import annotations
 - import logging
 - from datetime import date
 - from tkinter import messagebox
-- from typing import Callable, Optional, Union
+- from typing import Callable, List, Optional, Union
 - import customtkinter as ctk
+- from src.application.schemas.employee_schemas import EmployeeReadSchema
 - from src.application.schemas.task_schemas import TaskCreateSchema, TaskReadSchema, TaskUpdateSchema
 - from src.core.logging_config import log_ui_event, log_user_action
 - from src.domain.tasks.planning_task_model import PeriodType
+- from src.presentation.dialogs.employee_select_dialog import EmployeeSelectDialog
 ## Классы
 class TaskDialog(ctk.CTkToplevel):
-  def __init__(self, master: ctk.CTk, logger: logging.Logger, on_save: Callable[[Optional, Union[TaskCreateSchema, TaskUpdateSchema]], None], task: Optional[TaskReadSchema], **kwargs) -> None
+  def __init__(self, master: ctk.CTk, logger: logging.Logger, on_save: Callable[[Optional, Union[TaskCreateSchema, TaskUpdateSchema]], None], task: Optional[TaskReadSchema], available_employees: Optional[List[EmployeeReadSchema]], **kwargs) -> None
   def _setup_window(self) -> None
   def _create_widgets(self) -> None
   def _on_add_employees(self) -> None
@@ -478,16 +537,27 @@ def create_metadata_section(parent: ctk.CTkFrame, employee: EmployeeReadSchema, 
 - from uuid import UUID
 - import customtkinter as ctk
 - from src.application.schemas.employee_schemas import EmployeeCreateSchema, EmployeeReadSchema, EmployeeUpdateSchema
+- from src.application.schemas.task_schemas import TaskReadSchema
 - from src.core.logging_config import log_ui_event, log_user_action, log_user_error
 - from src.domain.employees.employee_exceptions import DuplicateEmployeeError
 - from src.presentation.async_bridge import AsyncBridge
 - from src.presentation.controllers.employee_controller import EmployeeController
+- from src.presentation.controllers.task_controller import TaskController
 - from src.presentation.dialogs.employee_dialog import EmployeeDialog
+- from src.presentation.dialogs.employee_tasks_dialog import EmployeeTasksDialog
 ## Классы
 class EmployeeDialogCoordinator:
-  def __init__(self, master: ctk.CTk, controller: EmployeeController, bridge: AsyncBridge, logger: logging.Logger, on_success: Callable[[], None]) -> None
+  def __init__(self, master: ctk.CTk, controller: EmployeeController, bridge: AsyncBridge, logger: logging.Logger, on_success: Callable[[], None], task_controller: Optional[TaskController]) -> None
   def open_create_dialog(self) -> None
   def open_card_dialog(self, employee: EmployeeReadSchema) -> None
+  def open_tasks_dialog(self, employee: EmployeeReadSchema) -> None
+  def _show_tasks_dialog(self, employee: EmployeeReadSchema, tasks: list[TaskReadSchema]) -> None
+  def _handle_remove_from_task(self, employee_id: UUID, task_id: UUID) -> None
+  def _on_remove_from_task_success(self, removed: bool, employee_id: UUID, task_id: UUID) -> None
+  def _handle_add_to_task(self, employee_id: UUID) -> None
+  def _open_task_select_dialog(self, employee_id: UUID, all_tasks: list[TaskReadSchema]) -> None
+  def _execute_add_employee_to_task(self, employee_id: UUID, task_id: UUID) -> None
+  def _on_add_to_task_success(self, added: bool, employee_id: UUID, task_id: UUID) -> None
   def _dispatch_save(self, employee_id: Optional[UUID], schema: Union[EmployeeCreateSchema, EmployeeUpdateSchema]) -> None
   def _on_card_save(self, employee_id: UUID, schema: EmployeeUpdateSchema) -> None
   def _execute_create(self, schema: EmployeeCreateSchema, attempt: int) -> None
@@ -497,6 +567,10 @@ class EmployeeDialogCoordinator:
   def _on_update_success(self, employee: EmployeeReadSchema) -> None
   def _on_update_error(self, exc: Exception, employee_id: UUID, schema: EmployeeUpdateSchema) -> None
   def _reopen_dialog_with_prefill(self, employee: Optional[EmployeeReadSchema], prefill_data: dict) -> None
+class _TaskSelectDialog(ctk.CTkToplevel):
+  def __init__(self, master, logger, tasks: list[TaskReadSchema])
+  def _select(self, task_id: UUID)
+  def get_result(self) -> Optional[UUID]
 
 # employee_list_widget.py
 ## Импорты
@@ -510,10 +584,11 @@ class EmployeeDialogCoordinator:
 - from src.core.logging_config import log_ui_event, log_user_action, log_user_error
 - from src.presentation.async_bridge import AsyncBridge
 - from src.presentation.controllers.employee_controller import EmployeeController
+- from src.presentation.controllers.task_controller import TaskController
 - from src.presentation.widgets.employee_dialog_coordinator import EmployeeDialogCoordinator
 ## Классы
 class EmployeeListWidget(ctk.CTkFrame):
-  def __init__(self, master: ctk.CTk, controller: EmployeeController, bridge: AsyncBridge, logger: logging.Logger, **kwargs) -> None
+  def __init__(self, master: ctk.CTk, controller: EmployeeController, bridge: AsyncBridge, logger: logging.Logger, task_controller: Optional[TaskController], **kwargs) -> None
   def _create_widgets(self) -> None
   def _configure_treeview_style(self) -> None
   def _on_heading_click(self, column: str) -> None
@@ -607,31 +682,29 @@ class PageFactory:
   def _create_employees_page_real(self, title_font: ctk.CTkFont, fm: Optional[FontManager]) -> tuple[ctk.CTkFrame, EmployeeListWidget]
   def _create_stub_page(self, title: str, message: str, title_font: ctk.CTkFont, subtitle_font: ctk.CTkFont, fm: Optional[FontManager]) -> ctk.CTkFrame
 
-# task_list_widget.py
+# task_dialog_coordinator.py
 ## Импорты
 - from __future__ import annotations
 - import logging
-- from tkinter import messagebox, ttk
-- from typing import Optional, Union
+- from tkinter import messagebox
+- from typing import Callable, List, Optional, Union
 - from uuid import UUID
 - import customtkinter as ctk
+- from src.application.schemas.employee_schemas import EmployeeReadSchema
 - from src.application.schemas.task_schemas import TaskCreateSchema, TaskReadSchema, TaskUpdateSchema
 - from src.core.logging_config import log_ui_event, log_user_action, log_user_error
-- from src.domain.tasks.planning_task_model import PERIOD_TYPE_RU
 - from src.domain.tasks.task_exceptions import DuplicateTaskNameError
 - from src.presentation.async_bridge import AsyncBridge
+- from src.presentation.controllers.employee_controller import EmployeeController
 - from src.presentation.controllers.task_controller import TaskController
 - from src.presentation.dialogs.task_dialog import TaskDialog
 ## Классы
-class TaskListWidget(ctk.CTkFrame):
-  def __init__(self, master: ctk.CTk, controller: TaskController, bridge: AsyncBridge, logger: logging.Logger, **kwargs) -> None
-  def _create_widgets(self) -> None
-  def _configure_treeview_style(self) -> None
-  def refresh(self) -> None
-  def _on_create_click(self) -> None
-  def _on_update_click(self) -> None
-  def _on_delete_click(self) -> None
-  def _on_refresh_click(self) -> None
+class TaskDialogCoordinator:
+  def __init__(self, master: ctk.CTk, task_controller: TaskController, employee_controller: Optional[EmployeeController], bridge: AsyncBridge, logger: logging.Logger, on_success: Callable[[], None]) -> None
+  def open_create_dialog(self) -> None
+  def open_edit_dialog(self, task: TaskReadSchema) -> None
+  def _load_employees_and_open(self, task: Optional[TaskReadSchema]) -> None
+  def _open_task_dialog(self, task: Optional[TaskReadSchema], employees: List[EmployeeReadSchema]) -> None
   def _dispatch_save(self, task_id: Optional[UUID], schema: Union[TaskCreateSchema, TaskUpdateSchema]) -> None
   def _execute_create(self, schema: TaskCreateSchema, attempt: int) -> None
   def _on_create_success(self, task: TaskReadSchema) -> None
@@ -640,6 +713,31 @@ class TaskListWidget(ctk.CTkFrame):
   def _on_update_success(self, task: TaskReadSchema) -> None
   def _on_update_error(self, exc: Exception, task_id: UUID) -> None
   def _reopen_edit_dialog(self, task: Optional[TaskReadSchema]) -> None
+
+# task_list_widget.py
+## Импорты
+- from __future__ import annotations
+- import logging
+- from tkinter import messagebox, ttk
+- from typing import Optional
+- import customtkinter as ctk
+- from src.application.schemas.task_schemas import TaskReadSchema
+- from src.core.logging_config import log_ui_event, log_user_action, log_user_error
+- from src.domain.tasks.planning_task_model import PERIOD_TYPE_RU
+- from src.presentation.async_bridge import AsyncBridge
+- from src.presentation.controllers.employee_controller import EmployeeController
+- from src.presentation.controllers.task_controller import TaskController
+- from src.presentation.widgets.task_dialog_coordinator import TaskDialogCoordinator
+## Классы
+class TaskListWidget(ctk.CTkFrame):
+  def __init__(self, master: ctk.CTk, controller: TaskController, bridge: AsyncBridge, logger: logging.Logger, employee_controller: Optional[EmployeeController], **kwargs) -> None
+  def _create_widgets(self) -> None
+  def _configure_treeview_style(self) -> None
+  def refresh(self) -> None
+  def _on_create_click(self) -> None
+  def _on_update_click(self) -> None
+  def _on_delete_click(self) -> None
+  def _on_refresh_click(self) -> None
   def _on_delete_success(self, deleted_id: UUID) -> None
   def _on_delete_error(self, exc: Exception) -> None
   def _on_refresh_error(self, exc: Exception) -> None

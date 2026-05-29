@@ -5,45 +5,38 @@
 Предоставляет интерфейс для просмотра и управления задачами планирования:
     - Таблица ``ttk.Treeview`` с колонками "№", "Название", "Тип периода".
     - Панель инструментов: "Создать", "Изменить", "Удалить", "Обновить".
-    - Модальное создание и редактирование через :class:`TaskDialog`.
-    - Обработка :class:`DuplicateTaskNameError` с предложением переименования.
+    - Делегирует управление диалогами и сохранение :class:`TaskDialogCoordinator`.
     - Автоматическое обновление таблицы после каждой операции.
 """
 from __future__ import annotations
 
 import logging
 from tkinter import messagebox, ttk
-from typing import Optional, Union
-from uuid import UUID
+from typing import Optional
 
 import customtkinter as ctk
 
-from src.application.schemas.task_schemas import (
-    TaskCreateSchema,
-    TaskReadSchema,
-    TaskUpdateSchema,
-)
+from src.application.schemas.task_schemas import TaskReadSchema
 from src.core.logging_config import log_ui_event, log_user_action, log_user_error
 from src.domain.tasks.planning_task_model import PERIOD_TYPE_RU
-from src.domain.tasks.task_exceptions import DuplicateTaskNameError
 from src.presentation.async_bridge import AsyncBridge
+from src.presentation.controllers.employee_controller import EmployeeController
 from src.presentation.controllers.task_controller import TaskController
-from src.presentation.dialogs.task_dialog import TaskDialog
+from src.presentation.widgets.task_dialog_coordinator import TaskDialogCoordinator
 
 
 class TaskListWidget(ctk.CTkFrame):
     """Виджет вкладки "Задачи" с таблицей и кнопками CRUD.
 
     Attributes:
-        _controller: Контроллер задач (фасад над репозиторием).
+        _controller: Контроллер задач.
         _bridge: Мост для вызова async-методов из GUI-потока.
         _logger: Логгер для событий виджета.
+        _coordinator: Координатор диалогов задач.
         _treeview: ``ttk.Treeview`` с данными задач.
         _tasks_by_id: Маппинг ``item_id → TaskReadSchema``.
         _task_counter: Счётчик строк для отображения "№".
     """
-
-    _MAX_RENAME_ATTEMPTS: int = 10
 
     def __init__(
         self,
@@ -51,6 +44,7 @@ class TaskListWidget(ctk.CTkFrame):
         controller: TaskController,
         bridge: AsyncBridge,
         logger: logging.Logger,
+        employee_controller: Optional[EmployeeController] = None,
         **kwargs,
     ) -> None:
         """Инициализация виджета вкладки задач."""
@@ -59,6 +53,15 @@ class TaskListWidget(ctk.CTkFrame):
         self._controller = controller
         self._bridge = bridge
         self._logger = logger
+
+        self._coordinator = TaskDialogCoordinator(
+            master=master,
+            task_controller=controller,
+            employee_controller=employee_controller,
+            bridge=bridge,
+            logger=logger,
+            on_success=self.refresh,
+        )
 
         self._tasks_by_id: dict[str, TaskReadSchema] = {}
         self._task_counter: int = 0
@@ -180,14 +183,7 @@ class TaskListWidget(ctk.CTkFrame):
     def _on_create_click(self) -> None:
         """Открытие диалога создания новой задачи."""
         log_ui_event(self._logger, "TaskListWidget.btn_create", "click")
-        self._logger.debug("TaskListWidget: открытие диалога создания задачи")
-
-        TaskDialog(
-            master=self._master_root,
-            logger=self._logger,
-            on_save=self._dispatch_save,
-            task=None,
-        )
+        self._coordinator.open_create_dialog()
 
     def _on_update_click(self) -> None:
         """Открытие диалога редактирования выбранной задачи."""
@@ -202,17 +198,7 @@ class TaskListWidget(ctk.CTkFrame):
             )
             return
 
-        self._logger.debug(
-            "TaskListWidget: открытие диалога редактирования задачи ID=%s",
-            selected.id,
-        )
-
-        TaskDialog(
-            master=self._master_root,
-            logger=self._logger,
-            on_save=self._dispatch_save,
-            task=selected,
-        )
+        self._coordinator.open_edit_dialog(selected)
 
     def _on_delete_click(self) -> None:
         """Обработчик кнопки 'Удалить'."""
@@ -261,222 +247,7 @@ class TaskListWidget(ctk.CTkFrame):
         )
 
     # ------------------------------------------------------------------
-    # Диспетчер сохранения (создание / редактирование)
-    # ------------------------------------------------------------------
-    def _dispatch_save(
-        self,
-        task_id: Optional[UUID],
-        schema: Union[TaskCreateSchema, TaskUpdateSchema],
-    ) -> None:
-        """Маршрутизирует коллбэк из диалога к нужному методу.
-
-        Args:
-            task_id: ID задачи для редактирования или ``None`` для создания.
-            schema: Схема данных (:class:`TaskCreateSchema` или
-                :class:`TaskUpdateSchema`).
-        """
-        if task_id is None:
-            # Режим создания
-            if not isinstance(schema, TaskCreateSchema):
-                self._logger.error(
-                    "TaskListWidget: _dispatch_save получил task_id=None, "
-                    "но schema не TaskCreateSchema",
-                )
-                return
-            self._execute_create(schema)
-        else:
-            # Режим редактирования
-            if not isinstance(schema, TaskUpdateSchema):
-                self._logger.error(
-                    "TaskListWidget: _dispatch_save получил task_id=%s, "
-                    "но schema не TaskUpdateSchema",
-                    task_id,
-                )
-                return
-            self._execute_update(task_id, schema)
-
-    # ------------------------------------------------------------------
-    # Создание задачи
-    # ------------------------------------------------------------------
-    def _execute_create(
-        self,
-        schema: TaskCreateSchema,
-        attempt: int = 1,
-    ) -> None:
-        """Запуск async-создания задачи через bridge."""
-        if not self._bridge.is_running():
-            self._logger.error(
-                "TaskListWidget: AsyncBridge недоступен, создание отменено",
-            )
-            return
-
-        self._bridge.run(
-            coro=self._controller.create_task(schema),
-            on_success=self._on_create_success,
-            on_error=lambda exc, s=schema, a=attempt: self._on_create_error(
-                exc, s, a,
-            ),
-        )
-
-    def _on_create_success(self, task: TaskReadSchema) -> None:
-        """Обработчик успешного создания задачи."""
-        log_user_action(
-            self._logger,
-            "Задача отображена в таблице",
-            f"ID: {task.id}, Имя: {task.name}",
-        )
-        self._on_refresh_click()
-
-    def _on_create_error(
-        self,
-        exc: Exception,
-        schema: TaskCreateSchema,
-        attempt: int,
-    ) -> None:
-        """Обработчик ошибки создания задачи."""
-        if isinstance(exc, DuplicateTaskNameError):
-            if attempt >= self._MAX_RENAME_ATTEMPTS:
-                log_user_error(
-                    self._logger,
-                    "Создание задачи",
-                    f"Превышен лимит попыток ({self._MAX_RENAME_ATTEMPTS})",
-                )
-                messagebox.showerror(
-                    "Ошибка",
-                    "Не удалось подобрать уникальное имя. Введите название вручную.",
-                    parent=self._master_root,
-                )
-                self._on_create_click()
-                return
-
-            suggested_name = f"{exc.duplicate_name} ({attempt + 1})"
-            rename = messagebox.askyesno(
-                "Дубликат названия",
-                f"Задача с названием '{exc.duplicate_name}' уже существует.\n\n"
-                f"Переименовать и создать под именем '{suggested_name}'?",
-                parent=self._master_root,
-            )
-
-            if rename:
-                log_user_action(
-                    self._logger,
-                    "Переименование дубликата",
-                    f"'{exc.duplicate_name}' → '{suggested_name}' (попытка {attempt + 1})",
-                )
-                new_schema = schema.model_copy(update={"name": suggested_name})
-                self._execute_create(new_schema, attempt=attempt + 1)
-            else:
-                log_user_action(
-                    self._logger,
-                    "Отмена переименования",
-                    f"Пользователь отказался от '{suggested_name}'",
-                )
-                self._on_create_click()
-            return
-
-        log_user_error(
-            self._logger,
-            "Создание задачи",
-            f"{type(exc).__name__}: {exc}",
-        )
-        messagebox.showerror(
-            "Ошибка создания задачи",
-            f"Не удалось создать задачу:\n{exc}",
-            parent=self._master_root,
-        )
-
-    # ------------------------------------------------------------------
-    # Редактирование задачи
-    # ------------------------------------------------------------------
-    def _execute_update(
-        self,
-        task_id: UUID,
-        schema: TaskUpdateSchema,
-    ) -> None:
-        """Запуск async-обновления задачи через bridge."""
-        if not self._bridge.is_running():
-            self._logger.error(
-                "TaskListWidget: AsyncBridge недоступен, обновление отменено",
-            )
-            return
-
-        self._bridge.run(
-            coro=self._controller.update_task(task_id, schema),
-            on_success=self._on_update_success,
-            on_error=lambda exc, tid=task_id: self._on_update_error(exc, tid),
-        )
-
-    def _on_update_success(self, task: TaskReadSchema) -> None:
-        """Обработчик успешного обновления задачи."""
-        log_user_action(
-            self._logger,
-            "Задача обновлена в таблице",
-            f"ID: {task.id}, Имя: {task.name}",
-        )
-        self._on_refresh_click()
-
-    def _on_update_error(self, exc: Exception, task_id: UUID) -> None:
-        """Обработчик ошибки обновления задачи."""
-        if isinstance(exc, DuplicateTaskNameError):
-            log_user_error(
-                self._logger,
-                "Обновление задачи",
-                f"ID={task_id}, Дубликат: '{exc.duplicate_name}'",
-            )
-            messagebox.showerror(
-                "Дубликат названия",
-                f"Задача с названием '{exc.duplicate_name}' уже существует.\n\n"
-                "Пожалуйста, выберите другое название.",
-                parent=self._master_root,
-            )
-            # Повторно открываем диалог редактирования (свежая копия задачи)
-            self._bridge.run(
-                coro=self._controller.get_task_by_id(task_id),
-                on_success=self._reopen_edit_dialog,
-                on_error=lambda e: self._logger.error(
-                    "Не удалось перезагрузить задачу для редактирования: %s", e,
-                ),
-            )
-            return
-
-        log_user_error(
-            self._logger,
-            "Обновление задачи",
-            f"ID={task_id}, {type(exc).__name__}: {exc}",
-        )
-        messagebox.showerror(
-            "Ошибка обновления задачи",
-            f"Не удалось обновить задачу:\n{exc}",
-            parent=self._master_root,
-        )
-
-    def _reopen_edit_dialog(self, task: Optional[TaskReadSchema]) -> None:
-        """Повторно открывает диалог редактирования (после ошибки дубликата).
-
-        Args:
-            task: Актуальные данные задачи (или ``None``, если удалена).
-        """
-        if task is None:
-            self._logger.warning(
-                "TaskListWidget: задача не найдена для повторного редактирования",
-            )
-            messagebox.showinfo(
-                "Задача не найдена",
-                "Задача была удалена другим пользователем.",
-                parent=self._master_root,
-            )
-            self._on_refresh_click()
-            return
-
-        TaskDialog(
-            master=self._master_root,
-            logger=self._logger,
-            on_save=self._dispatch_save,
-            task=task,
-        )
-
-    # ------------------------------------------------------------------
-    # Обработчики остальных операций
+    # Обработчики операций
     # ------------------------------------------------------------------
     def _on_delete_success(self, deleted_id: UUID) -> None:
         """Обработчик успешного удаления задачи."""
@@ -485,7 +256,7 @@ class TaskListWidget(ctk.CTkFrame):
             "Задача удалена из таблицы",
             f"ID: {deleted_id}",
         )
-        self._on_refresh_click()
+        self.refresh()
 
     def _on_delete_error(self, exc: Exception) -> None:
         """Обработчик ошибки удаления."""
@@ -518,24 +289,20 @@ class TaskListWidget(ctk.CTkFrame):
     # ------------------------------------------------------------------
     def _populate_table(self, tasks: list[TaskReadSchema]) -> None:
         """Заполнить таблицу задачами (полная перезапись) с защитой от гонки инициализации."""
-        # ✅ Защита 1: виджет уже уничтожен (например, при быстром закрытии окна)
         if not self.winfo_exists():
             self._logger.debug("TaskListWidget: виджет уничтожён, пропуск обновления таблицы")
             return
 
-        # ✅ Защита 2: Treeview ещё не создан или удалён
         if not hasattr(self, '_treeview') or self._treeview is None:
             self._logger.debug("TaskListWidget: Treeview не инициализирован, пропуск обновления")
             return
 
         try:
-            # ✅ Очистка текущих данных
             for item_id in self._treeview.get_children():
                 self._treeview.delete(item_id)
             self._tasks_by_id.clear()
             self._task_counter = 0
 
-            # ✅ Вставка новых записей
             for task in tasks:
                 period_localized = PERIOD_TYPE_RU.get(task.period_type, task.period_type)
                 self._task_counter += 1
@@ -551,7 +318,6 @@ class TaskListWidget(ctk.CTkFrame):
                 len(tasks),
             )
         except Exception as exc:
-            # ✅ Безопасная обработка ошибок без краша GUI-процесса
             self._logger.error(
                 "TaskListWidget: критическая ошибка при заполнении таблицы: %s",
                 exc,
@@ -565,3 +331,4 @@ class TaskListWidget(ctk.CTkFrame):
             return None
         item_id = selection[0]
         return self._tasks_by_id.get(item_id)
+

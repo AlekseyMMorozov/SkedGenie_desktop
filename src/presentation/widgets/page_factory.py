@@ -180,6 +180,7 @@ class PageFactory:
             controller=self._task_controller,
             bridge=self._bridge,
             logger=self._logger,
+            employee_controller=self._employee_controller,
         )
         task_widget.pack(
             fill="both",
@@ -267,6 +268,7 @@ class PageFactory:
             controller=self._employee_controller,
             bridge=self._bridge,
             logger=self._logger,
+            task_controller=self._task_controller,  # ✅ Передаем task_controller
         )
         employee_widget.pack(
             fill="both",

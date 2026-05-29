@@ -1,3 +1,4 @@
+# src/presentation/dialogs/employee_dialog.py
 """
 src/presentation/dialogs/employee_dialog.py
 Унифицированный диалог сотрудника: создание / просмотр / редактирование.
@@ -12,6 +13,7 @@ src/presentation/dialogs/employee_dialog.py
     - Двухколоночный layout в ScrollableFrame.
     - Безопасный ввод даты через три поля (ДД/ММ/ГГГГ) во всех режимах.
     - Единая валидация через Pydantic-схемы + перехват доменных исключений.
+    - Кнопка "Задачи" для просмотра связей (только view/edit).
 """
 from __future__ import annotations
 
@@ -51,6 +53,7 @@ class EmployeeDialog(ctk.CTkToplevel):
         mode: str = "create",
         employee: Optional[EmployeeReadSchema] = None,
         prefill_data: Optional[dict] = None,
+        on_view_tasks: Optional[Callable[[EmployeeReadSchema], None]] = None,
         **kwargs,
     ) -> None:
         super().__init__(master, **kwargs)
@@ -59,6 +62,7 @@ class EmployeeDialog(ctk.CTkToplevel):
         self._employee = employee
         self._prefill_data = prefill_data
         self._mode = mode  # "create" | "view" | "edit"
+        self._on_view_tasks = on_view_tasks
 
         # Поля ввода
         self._entry_last_name: ctk.CTkEntry | None = None
@@ -78,6 +82,7 @@ class EmployeeDialog(ctk.CTkToplevel):
         # Кнопки (для динамического переключения)
         self._btn_primary: ctk.CTkButton | None = None
         self._btn_secondary: ctk.CTkButton | None = None
+        self._btn_tasks: ctk.CTkButton | None = None
 
         self._setup_window()
         self._create_widgets()
@@ -123,14 +128,30 @@ class EmployeeDialog(ctk.CTkToplevel):
         btn_inner = ctk.CTkFrame(button_panel, fg_color="transparent")
         btn_inner.pack(expand=True, fill="both", padx=self._PAD_X, pady=8)
 
+        # Левая группа кнопок
+        left_buttons_frame = ctk.CTkFrame(btn_inner, fg_color="transparent")
+        left_buttons_frame.pack(side="left", fill="y")
+
         self._btn_secondary = ctk.CTkButton(
-            btn_inner, text="Отмена", command=self._on_cancel,
+            left_buttons_frame, text="Отмена", command=self._on_cancel,
             fg_color="gray40", hover_color="gray30", height=32, width=100,
         )
-        self._btn_secondary.pack(side="left")
+        self._btn_secondary.pack(side="left", padx=(0, 5))
+
+        # Кнопка "Задачи" (только для view/edit)
+        if self._employee and self._on_view_tasks:
+            self._btn_tasks = ctk.CTkButton(
+                left_buttons_frame, text="Задачи", command=self._on_view_tasks_click,
+                fg_color="#1f538d", hover_color="#1a4575", height=32, width=100,
+            )
+            self._btn_tasks.pack(side="left", padx=(0, 5))
+
+        # Правая группа кнопок
+        right_buttons_frame = ctk.CTkFrame(btn_inner, fg_color="transparent")
+        right_buttons_frame.pack(side="right", fill="y")
 
         self._btn_primary = ctk.CTkButton(
-            btn_inner, text="Сохранить", command=self._on_primary_click,
+            right_buttons_frame, text="Сохранить", command=self._on_primary_click,
             height=32, width=160,
         )
         self._btn_primary.pack(side="right")
@@ -279,12 +300,25 @@ class EmployeeDialog(ctk.CTkToplevel):
         if self._mode == "view":
             self._btn_primary.configure(text="Изменить", command=self._on_edit_click)
             self._btn_secondary.configure(text="Закрыть")
+            if self._btn_tasks:
+                self._btn_tasks.configure(state="normal")
         elif self._mode == "edit":
             self._btn_primary.configure(text="Сохранить изменения", command=self._on_save_click)
             self._btn_secondary.configure(text="Отмена", command=self._on_cancel)
+            if self._btn_tasks:
+                self._btn_tasks.configure(state="normal")
         else:  # create
             self._btn_primary.configure(text="Сохранить", command=self._on_save_click)
             self._btn_secondary.configure(text="Отмена", command=self._on_cancel)
+            if self._btn_tasks:
+                self._btn_tasks.configure(state="disabled") # Скрываем или дизейблим для создания
+
+    def _on_view_tasks_click(self) -> None:
+        """Обработчик кнопки 'Задачи'."""
+        if self._employee and self._on_view_tasks:
+            log_ui_event(self._logger, widget="EmployeeDialog", event="VIEW_TASKS_CLICKED",
+                         data=f"employee_id={self._employee.id}")
+            self._on_view_tasks(self._employee)
 
     def _on_edit_click(self) -> None:
         """Переключение из view в edit."""
