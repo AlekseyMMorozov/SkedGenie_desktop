@@ -1,4 +1,4 @@
-# main.py
+# src/main.py
 """
 Точка входа в приложение SkedGenie.
 
@@ -22,6 +22,7 @@ from pathlib import Path
 import customtkinter as ctk
 
 from src.application.services.employee_link_service import EmployeeLinkService
+from src.application.services.engagement_color_service import EngagementColorService
 from src.core.logging_config import (
     setup_logging,
     get_logger,
@@ -32,12 +33,16 @@ from src.infrastructure.db.async_database_session import (
     get_session_factory,
 )
 from src.infrastructure.repositories.employee_repository import EmployeeSQLAlchemyRepository
+from src.infrastructure.repositories.engagement_repository import EngagementSQLAlchemyRepository
+from src.infrastructure.repositories.engagement_template_repository import EngagementTemplateSQLAlchemyRepository
+from src.infrastructure.repositories.engagement_type_repository import EngagementTypeSQLAlchemyRepository
 from src.infrastructure.repositories.task_repository import TaskSQLAlchemyRepository
 from src.presentation.controllers.employee_controller import EmployeeController
+from src.presentation.controllers.engagement_template_controller import EngagementTemplateController
+from src.presentation.controllers.engagement_type_controller import EngagementTypeController
 from src.presentation.controllers.task_controller import TaskController
 from src.presentation.main_window import MainWindow
 from src.presentation.settings import Settings
-
 
 # Константы
 DATABASE_URL: str = "sqlite+aiosqlite:///./data/skedgenie.db"
@@ -46,18 +51,7 @@ SETTINGS_PATH: Path = Path("data/settings.json")
 
 
 def main() -> None:
-    """Главная функция запуска приложения.
-
-    Последовательность инициализации:
-        1. Настройка логирования (консоль + файл, без GUI).
-        2. Загрузка пользовательских настроек (размер шрифта, тема).
-        3. Применение темы CustomTkinter (глобально, без Tk-корня).
-        4. Инициализация БД (создание таблиц).
-        5. Создание инфраструктуры (session_factory → repository → controller).
-        6. Создание главного окна (создаёт AsyncBridge и FontManager внутри).
-        7. Создание GUI-хэндлера логирования и привязка его к панели логов.
-        8. Запуск mainloop.
-    """
+    """Главная функция запуска приложения."""
     # ------------------------------------------------------------------
     # Этап 1: Инициализация логирования (без GUI)
     # ------------------------------------------------------------------
@@ -135,7 +129,7 @@ def main() -> None:
         sys.exit(1)
 
     # ------------------------------------------------------------------
-    # Этап 5: Создание инфраструктуры (Tasks + Employees)
+    # Этап 5: Создание инфраструктуры
     # ------------------------------------------------------------------
     try:
         logger.info("Этап 5: Создание инфраструктуры...")
@@ -161,9 +155,27 @@ def main() -> None:
             link_service=employee_link_service,
             logger=logger,
         )
-        logger.debug("EmployeeController создан (с EmployeeLinkService)")
+        logger.debug("EmployeeController создан")
 
-        logger.info("Инфраструктура успешно создана (Tasks + Employees)")
+        # --- Engagement-ветка ---
+        engagement_type_repository = EngagementTypeSQLAlchemyRepository(session_factory)
+        engagement_template_repository = EngagementTemplateSQLAlchemyRepository(session_factory)
+        engagement_repository = EngagementSQLAlchemyRepository(session_factory)
+
+        color_service = EngagementColorService(logger)
+
+        engagement_type_controller = EngagementTypeController(
+            repository=engagement_type_repository,
+            color_service=color_service,
+            logger=logger,
+        )
+        engagement_template_controller = EngagementTemplateController(
+            repository=engagement_template_repository,
+            logger=logger,
+        )
+        logger.debug("Engagement Controllers созданы")
+
+        logger.info("Инфраструктура успешно создана")
     except Exception as exc:
         logger.critical(
             "Критическая ошибка при создании инфраструктуры: %s",
@@ -171,7 +183,6 @@ def main() -> None:
             exc_info=True,
         )
         sys.exit(1)
-
 
     # ------------------------------------------------------------------
     # Этап 6: Создание главного окна
@@ -182,13 +193,14 @@ def main() -> None:
         window = MainWindow(
             task_controller=task_controller,
             employee_controller=employee_controller,
+            engagement_type_controller=engagement_type_controller,
+            engagement_template_controller=engagement_template_controller,
+            color_service=color_service,  # ✅ Передаем сервис цветов
             logger=logger,
             settings=settings_manager,
         )
 
         # ✅ КРИТИЧНО: привязываем обработчик закрытия окна
-        # Вызываем _setup_closing_handler(), который внутри делает:
-        #   self.protocol("WM_DELETE_WINDOW", self._on_closing)
         window._setup_closing_handler()
 
         logger.info("Главное окно создано")
@@ -200,14 +212,9 @@ def main() -> None:
         )
         sys.exit(1)
 
-
     # ------------------------------------------------------------------
     # Этап 7: Создание GUI-хэндлера и привязка к панели логов
     # ------------------------------------------------------------------
-    # ВАЖНО: порядок вызовов критичен!
-    #   1) attach_gui_handler(window) создаёт CTkLogHandler
-    #   2) window.attach_log_handler() привязывает его к LogPanel
-    # Если поменять местами — панель останется пустой (handler ещё не создан).
     try:
         logger.debug("Этап 7: Создание GUI-хэндлера и привязка к панели логов...")
         attach_gui_handler(window)
@@ -225,14 +232,13 @@ def main() -> None:
     # ------------------------------------------------------------------
     logger.info("Этап 8: Запуск mainloop")
     try:
-
         # Тест потокобезопасности
         def test_gui_update():
             logger.info("✓ тест GUI пройден")
 
         window.after(200, test_gui_update)
-
         window.run()
+
     except Exception as exc:
         logger.critical(
             "Критическая ошибка в mainloop: %s",
@@ -241,17 +247,16 @@ def main() -> None:
         )
         sys.exit(1)
     finally:
-        # ✅ Этот блок выполняется всегда после выхода из mainloop
         logger.info("=== SkedGenie завершён ===")
 
         # ✅ Для Windows: гарантируем чистый выход процесса
-        # (daemon-потоки могут не успеть завершиться штатно)
         if sys.platform == "win32":
             import os
-            os._exit(0)  # ✅ Мгновенное завершение без вызова __del__/atexit
+            os._exit(0)
         else:
             sys.exit(0)
 
 
 if __name__ == "__main__":
     main()
+  

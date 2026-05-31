@@ -193,6 +193,11 @@ def setup_logging(
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
 
+    # ✅ Отключаем шумное логирование SQLAlchemy (оставляем только WARNING и выше)
+    # Это убирает DEBUG-логи запросов из консоли и файла, но оставляет ошибки.
+    for db_logger_name in _DB_LOGGER_NAMES:
+        logging.getLogger(db_logger_name).setLevel(logging.WARNING)
+
     # Избегаем дублирования хэндлеров при повторных вызовах setup_logging.
     for handler in list(root_logger.handlers):
         root_logger.removeHandler(handler)
@@ -297,4 +302,3 @@ def attach_gui_handler(root: ctk.CTk) -> None:
     logging.getLogger().info(
         "attach_gui_handler: CTkLogHandler успешно прикреплён к GUI"
     )
-

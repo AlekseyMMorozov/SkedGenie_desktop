@@ -3,98 +3,7 @@
 Язык: Python
 Архитектура: Onion/Clean (Domain → Application → Infrastructure → Presentation)
 UI: CustomTkinter
-✅ Текущее состояние
-Core
-src/core/logging_config.py — система логирования:
-CTkLogHandler с буфером и фильтрацией БД-логов
-DatabaseLogFilter — "БД в интерфейс не логируется"
-Функции: setup_logging, get_logger, log_user_action, log_user_error, log_ui_event
-attach_gui_handler(root) — отложенное подключение к GUI
-RotatingFileHandler (5 МБ × 3 бэкапа)
-Domain (Tasks)
-src/domain/tasks/planning_task_model.py:
-PeriodType (WEEK/MONTH/QUARTER/YEAR/CUSTOM) с localized
-PlanningTask (Pydantic v2, @model_validator для расчёта period_start/period_end)
-src/domain/tasks/task_exceptions.py:
-TaskDomainError, InvalidTaskNameError, InvalidTaskPeriodError
-EmptyTaskReferenceError, DuplicateTaskNameError
-Domain (Employees)
-src/domain/employees/employee_model.py:
-Employee (Pydantic v2, @model_validator для display_name)
-Поле: rank: Optional[str] (Звание)
-Методы: get_full_name(), toggle_active(), with_updated_display_name(), clone()
-src/domain/employees/employee_exceptions.py:
-EmployeeDomainError, InvalidEmployeeNameError
-DuplicateEmployeeError (с duplicate_field, duplicate_value)
-EmployeeInUseError (с task_count)
-Application (Tasks)
-src/application/interfaces/task_repository_interface.py — ITaskRepository
-Добавлены методы: add_employee_to_task, get_tasks_by_employee
-src/application/schemas/task_schemas.py:
-TaskCreateSchema, TaskUpdateSchema, TaskReadSchema
-Application (Employees)
-src/application/interfaces/employee_repository_interface.py — IEmployeeRepository
-src/application/schemas/employee_schemas.py:
-EmployeeCreateSchema, EmployeeUpdateSchema, EmployeeReadSchema
-Поле: rank: Optional[str] во всех схемах
-src/application/services/employee_link_service.py — оркестрация связей сотрудник↔задача:
-EmployeeUsageInfo (dataclass: employee_id, task_count, exists)
-get_usage_info(), get_task_count() — проверка использования
-remove_from_task() — точечное удаление из одной задачи
-cascade_remove_from_tasks() — CASCADE-удаление из всех задач
-src/application/services/display_name_resolver.py — чистая функция разрешения конфликтов однофамильцев
-Infrastructure
-src/infrastructure/db/async_database_session.py — async SQLAlchemy сессии
-DEV_RESET_DB = False (отключён авто-сброс БД для тестирования)
-src/infrastructure/db/models/task_orm_model.py — TaskORMModel (UNIQUE name)
-src/infrastructure/db/models/employee_orm_model.py — EmployeeORMModel
-Колонка: rank VARCHAR(100)
-src/infrastructure/repositories/task_repository.py — TaskSQLAlchemyRepository
-Реализованы: add_employee_to_task, get_tasks_by_employee, _add_employee_to_orm
-src/infrastructure/repositories/employee_repository.py — EmployeeSQLAlchemyRepository:
-Маппинг поля rank в _to_orm, _to_domain, update
-Presentation (Controllers)
-src/presentation/controllers/task_controller.py — TaskController
-Добавлен метод: add_employee_to_task
-src/presentation/controllers/employee_controller.py — EmployeeController:
-Передача rank в _to_read_schema и create_employee
-Presentation (Dialogs)
-src/presentation/dialogs/task_dialog.py — TaskDialog:
-Интеграция выбора сотрудников через EmployeeSelectDialog
-Кнопка «Сотрудники» показывает количество выбранных
-src/presentation/dialogs/employee_dialog.py — EmployeeDialog (унифицированный create/view/edit):
-Поле ввода: «Звание» в правой колонке рядом с «Должностью»
-Кнопка «Задачи» (только в режимах view/edit) для открытия списка задач сотрудника
-src/presentation/dialogs/employee_select_dialog.py — модальный мультиселект сотрудников
-src/presentation/dialogs/employee_tasks_dialog.py — диалог управления задачами сотрудника:
-Список задач с сортировкой и перестановкой столбцов
-Кнопки «Удалить из задачи» и «Добавить в задачу»
-Вспомогательный класс _TaskSelectDialog для выбора задачи при добавлении
-Presentation (Widgets)
-src/presentation/widgets/task_list_widget.py — TaskListWidget (тонкий фасад)
-Делегирует управление диалогами в TaskDialogCoordinator
-src/presentation/widgets/task_dialog_coordinator.py — TaskDialogCoordinator:
-Управление жизненным циклом TaskDialog
-Загрузка актуальных данных задачи перед редактированием (fix stale data)
-Диспетчеризация сохранения и обработка ошибок
-src/presentation/widgets/employee_list_widget.py — EmployeeListWidget:
-Столбцы: №, Должность, Звание, ФИО, Статус
-Сортировка по клику, перестановка столбцов через ПКМ
-Принимает task_controller для передачи в координатор
-src/presentation/widgets/employee_dialog_coordinator.py — EmployeeDialogCoordinator:
-Открытие карточки сотрудника с кнопкой «Задачи»
-Открытие EmployeeTasksDialog с загрузкой задач
-Обработка добавления/удаления сотрудника из задач (_handle_add_to_task, _handle_remove_from_task)
-src/presentation/widgets/page_factory.py — PageFactory:
-Передает task_controller в EmployeeListWidget и employee_controller в TaskListWidget
-src/presentation/async_bridge.py — AsyncBridge с graceful shutdown
-src/presentation/font_manager.py — FontManager
-src/presentation/settings.py — Settings
-src/presentation/widgets/log_panel.py — LogPanel
-src/presentation/widgets/navigation_sidebar.py — NavigationSidebar
-src/presentation/widgets/main_menu.py — MainMenu
-src/presentation/main_window.py — MainWindow (тонкий фасад)
-main.py — 8-этапная инициализация (DEV_RESET_DB = False)
+
 🏗 Архитектурные решения
 Общие
 AsyncBridge: daemon-поток с asyncio loop на всё время жизни приложения
@@ -116,11 +25,46 @@ Employees
 Удаление из задачи (точечное, без удаления сотрудника).
 Добавление в задачу через вспомогательный диалог выбора.
 Мягкое удаление: Через архивацию (is_active=False).
-🎯 Следующие задачи / Известные проблемы
-Engagements (Задействования): Подготовить переиспользуемый паттерн MultiSelectDialog для выбора задействований (аналогично сотрудникам).
-Графики (Schedule): Реализация конкретной привязки во времени (следующий крупный этап).
-Рефакторинг EmployeeTasksDialog: Вынести _TaskSelectDialog в отдельный файл или универсальный компонент, если он понадобится elsewhere.
-Оптимизация запросов: Текущая реализация get_tasks_by_employee и add_employee_to_task загружает все задачи и фильтрует в Python. При росте данных потребуется миграция на PostgreSQL с jsonb @> или нормализация связей.
+
+🎯 Следующие задачи: исправление работы функционала создания Задействований
+Артем, по результатам нашего обсуждения ожидаемое поведение программы при создании задействования через диалог EngagementDialog должно быть следующим:
+1. Интерфейс и Компоновка
+Единое окно: Диалог открывается в альбомной ориентации с двумя колонками. Убрать полоску скролла и сделать окно меньше без больших пустых пространств.
+Кнопки управления: Кнопки «Сохранить» и «Отмена» расположены сверху диалогового окна.
+Левая колонка (Параметры типа):
+Выпадающий список «Группа / Тип» с кнопкой добавления новой группы («+»).
+Переключатели типа длительности: «Длительный», «Суточный», «Короткий». 
+Поле ввода цвета (HEX).
+Поле «Периодичность» (появляется только для типа «Суточный»).
+Правая колонка (Время и Детали):
+Блок времени (появляется/исчезает динамически): поля «Начало» и «Конец» (ЧЧ:ММ) + лейбл «Длительность». Зависит от Переключатели типа длительности
+Разделитель.
+Блок деталей: «Полное название *» и «Краткое имя *».
+2. Динамическое Поведение (Переключение типов)
+При смене радио-кнопки «Тип длительности»:
+Длительный (>2 суток):
+Блок времени полностью скрывается (включая лейбл длительности).
+Поле периодичности скрывается.
+При сохранении время устанавливается автоматически (00:00), длительность = 24ч.
+Суточный (18–30 часов):
+Блок времени отображается.
+Поле периодичности отображается.
+Лейбл длительности пересчитывается с учетом перехода через сутки (если конец ≤ начала, добавляется +24ч). Например: 08:00 – 11:00 = 27ч.
+Короткий (<18 часов):
+Блок времени отображается.
+Поле периодичности скрывается.
+Лейбл длительности пересчитывается. Если конец < начала, также считается переход через полночь (для ночных смен). Если конец == началу — предупреждение «0ч».
+3. Валидация и Сохранение
+Обязательные поля: При нажатии «Сохранить» проверяются «Полное название», «Краткое имя» и «Группа». Если поле пустое — оно подсвечивается красной рамкой, появляется сообщение со списком незаполненных полей, сохранение блокируется.
+Цвет: Если введен невалидный HEX или поле пустое, автоматически подставляется дефолтный цвет #4CAF50.
+Время: Проверяется формат ЧЧ:ММ. Для суточных/коротких типов время обязательно.
+Блокировка UI: Во время сохранения интерфейс блокируется (AsyncBridge), предотвращая повторные клики. После успешного сохранения таблица задействований обновляется автоматически.
+4. Предзаполнение
+При открытии диалога в режиме создания поля времени автоматически заполняются значениями 08:00 (начало) и 11:00 (конец).
+Лейбл длительности сразу показывает рассчитанное значение (3ч для короткого типа по умолчанию).
+
+
+
 📜 Принятые правила в ходе работы
 Поэтапная работа: Один файл за итерацию, с подтверждением перед правкой.
 Источники истины: structure.md и ответы пользователя. Ничего не придумывать.

@@ -14,7 +14,7 @@
     - Построение структуры меню → :class:`MainMenu`.
     - Создание страниц контента → :class:`PageFactory`.
     - Асинхронные операции → :class:`AsyncBridge`.
-    - Бизнес-логика → :class:`TaskController` / :class:`EmployeeController`.
+    - Бизнес-логика → Контроллеры (Task, Employee, EngagementType, EngagementTemplate).
 
 Цветовая схема (Material Design 3 / Fluent Light):
     - Фон окна: ``#F3F3F3`` (светло-серый).
@@ -23,11 +23,13 @@
 from __future__ import annotations
 
 import logging
+import sys
 from tkinter import messagebox
 from typing import Optional
 
 import customtkinter as ctk
 
+from src.application.services.engagement_color_service import EngagementColorService
 from src.core.logging_config import (
     get_ctk_handler,
     log_ui_event,
@@ -35,6 +37,8 @@ from src.core.logging_config import (
 )
 from src.presentation.async_bridge import AsyncBridge
 from src.presentation.controllers.employee_controller import EmployeeController
+from src.presentation.controllers.engagement_template_controller import EngagementTemplateController
+from src.presentation.controllers.engagement_type_controller import EngagementTypeController
 from src.presentation.controllers.task_controller import TaskController
 from src.presentation.font_manager import (
     FontManager,
@@ -90,6 +94,9 @@ class MainWindow(ctk.CTk):
         logger: logging.Logger,
         settings: Optional[Settings] = None,
         employee_controller: Optional[EmployeeController] = None,
+        engagement_type_controller: Optional[EngagementTypeController] = None,
+        engagement_template_controller: Optional[EngagementTemplateController] = None,
+        color_service: Optional[EngagementColorService] = None,
         **kwargs,
     ) -> None:
         """Инициализация главного окна.
@@ -99,7 +106,9 @@ class MainWindow(ctk.CTk):
             logger: Логгер для событий окна.
             settings: Менеджер настроек (для будущего диалога настроек).
             employee_controller: Контроллер сотрудников.
-                Если None — страница «Сотрудники» останется заглушкой.
+            engagement_type_controller: Контроллер типов задействований.
+            engagement_template_controller: Контроллер шаблонов задействований.
+            color_service: Сервис генерации уникальных цветов.
             **kwargs: Дополнительные параметры для ``CTk``.
         """
         # super().__init__() создаёт Tk-корень — это ОБЯЗАТЕЛЬНО должно
@@ -110,6 +119,9 @@ class MainWindow(ctk.CTk):
         self._settings = settings
         self._task_controller = task_controller
         self._employee_controller = employee_controller
+        self._engagement_type_controller = engagement_type_controller
+        self._engagement_template_controller = engagement_template_controller
+        self._color_service = color_service
 
         # Объекты, требующие Tk-корень.
         self._bridge = AsyncBridge(self, logger)
@@ -147,12 +159,7 @@ class MainWindow(ctk.CTk):
     # Инициализация FontManager (требует Tk-корень)
     # ------------------------------------------------------------------
     def _init_font_manager(self) -> FontManager:
-        """Создать и зарегистрировать FontManager.
-
-        Читает размер шрифта из settings (если передан), иначе использует
-        ``FontSize.MEDIUM``. Регистрирует экземпляр как глобальный синглтон
-        через :func:`set_font_manager`.
-        """
+        """Создать и зарегистрировать FontManager."""
         if self._settings is not None:
             try:
                 base_size = self._settings.get_current().font_size
@@ -254,8 +261,11 @@ class MainWindow(ctk.CTk):
             content_card=self._content_card,
             task_controller=self._task_controller,
             employee_controller=self._employee_controller,
+            engagement_type_controller=self._engagement_type_controller,
+            engagement_template_controller=self._engagement_template_controller,
             bridge=self._bridge,
             logger=self._logger,
+            color_service=self._color_service,
         )
         self._pages, self._task_list_widget, self._employee_list_widget = (
             page_factory.create_all_pages()
@@ -264,12 +274,7 @@ class MainWindow(ctk.CTk):
         self._logger.debug("MainWindow: сайдбар + контент-область + страницы созданы")
 
     def _create_log_panel(self) -> None:
-        """Создание сворачиваемой панели логов.
-
-        Примечание: подключение панели к ``CTkLogHandler`` выполняется
-        отдельно через :meth:`attach_log_handler` после того, как
-        ``main.py`` вызовет :func:`attach_gui_handler`.
-        """
+        """Создание сворачиваемой панели логов."""
         self._log_panel = LogPanel(
             master=self,
             logger=self._logger,
@@ -285,11 +290,7 @@ class MainWindow(ctk.CTk):
         )
 
     def attach_log_handler(self) -> None:
-        """Прикрепить ``CTkLogHandler`` к панели логов.
-
-        Должен вызываться в ``main.py`` **после** :func:`attach_gui_handler`,
-        чтобы :func:`get_ctk_handler` вернул существующий handler.
-        """
+        """Прикрепить ``CTkLogHandler`` к панели логов."""
         handler = get_ctk_handler()
         if handler is None:
             self._logger.warning(
@@ -359,8 +360,7 @@ class MainWindow(ctk.CTk):
         )
 
     # ------------------------------------------------------------------
-    # Menu handlers (бизнес-логика действий меню остаётся здесь,
-    # т.к. требует доступа к состоянию MainWindow)
+    # Menu handlers
     # ------------------------------------------------------------------
     def _on_exit(self) -> None:
         """Обработчик 'Файл → Выход'."""
@@ -389,7 +389,6 @@ class MainWindow(ctk.CTk):
         """Обработчик 'Вид → Обновить'.
 
         Обновляет данные во всех существующих list-виджетах.
-        Операция быстрая, безопасная для параллельного выполнения.
         """
         log_ui_event(self._logger, "MainWindow.menu_view_refresh", "click")
 
@@ -398,6 +397,15 @@ class MainWindow(ctk.CTk):
 
         if self._employee_list_widget is not None:
             self._employee_list_widget.refresh()
+
+        # Обновление страницы задействований, если она активна или существует
+        engagements_page = self._pages.get(self._SECTION_ENGAGEMENTS)
+        if engagements_page:
+            # Находим EngagementManagementWidget внутри страницы
+            for child in engagements_page.winfo_children():
+                if hasattr(child, '_list_widget'):
+                    child._list_widget.refresh()
+                    break
 
     def _on_clear_logs(self) -> None:
         """Обработчик 'Вид → Очистить логи'."""
@@ -437,7 +445,7 @@ class MainWindow(ctk.CTk):
             "О программе",
             f"SkedGenie — Планировщик смен и нарядов\n\n"
             f"Версия: {self._APP_VERSION}\n"
-            f"Дата: 2026-05-26\n\n"
+            f"Дата: 2026-05-30\n\n"
             f"Десктопное приложение для автоматического планирования\n"
             f"смен, нарядов и дежурств с проверкой жёстких правил.",
             parent=self,
@@ -497,40 +505,31 @@ class MainWindow(ctk.CTk):
     def _initial_load(self) -> None:
         """Первичная загрузка данных с отложенным стартом для стабильности на Windows."""
         self._logger.info("MainWindow: первичная загрузка данных из БД")
-
-        # ✅ Выносим логику в отдельный метод класса — надёжнее для Tkinter callbacks
         self.after(300, self._do_initial_load)
 
 
     def _do_initial_load(self) -> None:
-        """Внутренний метод для отложенной загрузки (вызывается через after)."""
+        """
+        Отложенная инициализация.
+        Убраны все запросы к БД и обновления виджетов.
+        Загрузка происходит только по явному действию пользователя (клик по кнопке/вкладке),
+        когда event loop Tkinter полностью стабилен.
+        """
+        if not self.winfo_exists():
+            return
+
+        # Просто логируем готовность. Никаких bridge.run() здесь!
+        self._logger.info("MainWindow: интерфейс готов к работе")
+
+    def _safe_schedule_refresh(self, widget) -> None:
+        """
+        Безопасно планирует обновление виджета в главном потоке.
+        Использует after(0) для гарантии выполнения в event loop Tkinter.
+        """
         try:
-            # ✅ Проверка: окно ещё существует?
-            if not self.winfo_exists():
-                self._logger.debug("MainWindow: окно уничтожено, отмена загрузки")
-                return
-
-            # ✅ Безопасный доступ к виджетам через локальные переменные
-            task_widget = getattr(self, '_task_widget', None)
-            employee_widget = getattr(self, '_employee_widget', None)
-
-            if task_widget and hasattr(task_widget, 'refresh'):
-                self._bridge.run(
-                    self._task_controller.get_all_tasks(),
-                    on_success=task_widget.refresh,
-                    on_error=task_widget._on_refresh_error
-                )
-            if employee_widget and hasattr(employee_widget, 'refresh'):
-                self._bridge.run(
-                    self._employee_controller.get_all_employees(),
-                    on_success=employee_widget.refresh,
-                    on_error=employee_widget._on_refresh_error
-                )
+            if widget and widget.winfo_exists():
+                # ✅ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: используем after(0) вместо прямого вызова
+                # Это предотвращает Race Condition и Access Violation
+                widget.after(0, widget.refresh)
         except Exception as exc:
-            self._logger.error(
-                "MainWindow: ошибка при отложенной загрузке: %s",
-                exc,
-                exc_info=True
-            )
-
-
+            self._logger.warning("Ошибка при планировании обновления виджета: %s", exc)
