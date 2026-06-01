@@ -40,6 +40,63 @@ class EmployeeSelectDialog(ctk.CTkToplevel):
         self._setup_window()
         self._create_widgets()
 
+        # ✅ Применяем тему после создания виджетов
+        self._apply_theme_to_self()
+
+    # ------------------------------------------------------------------
+    # Theme & Window Setup
+    # ------------------------------------------------------------------
+    def _apply_theme_to_self(self) -> None:
+        """Применяет цвета темы к диалогу и таблице."""
+        root = self.winfo_toplevel()
+        if hasattr(root, '_theme_colors'):
+            colors = root._theme_colors
+            dialog_bg = colors.get("dialog_bg", "#FFFFFF")
+            border_color = colors.get("border_color", "#C0C0C0")
+
+            self.configure(fg_color=dialog_bg)
+            self._configure_treeview_style(dialog_bg, border_color)
+        else:
+            self.configure(fg_color="#FFFFFF")
+            self._configure_treeview_style("#FFFFFF", "#C0C0C0")
+
+    def _configure_treeview_style(self, bg_color: str, border_color: str) -> None:
+        """Настраивает стиль Treeview под текущую тему."""
+        style = ttk.Style()
+        style.theme_use("clam")
+
+        # Определяем цвет текста в зависимости от яркости фона
+        text_color = "#000000" if self._is_light_color(bg_color) else "#FFFFFF"
+        heading_bg = "#E0E0E0" if self._is_light_color(bg_color) else "#3A3A3A"
+
+        style.configure(
+            "Treeview",
+            background=bg_color,
+            foreground=text_color,
+            fieldbackground=bg_color,
+            rowheight=28,
+            font=("Segoe UI", 10),
+            borderwidth=0,
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=heading_bg,
+            foreground=text_color,
+            font=("Segoe UI", 10, "bold"),
+            relief="flat",
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", "#1F6AA5")],
+            foreground=[("selected", "#FFFFFF")],
+        )
+
+    @staticmethod
+    def _is_light_color(hex_color: str) -> bool:
+        hex_color = hex_color.lstrip("#")
+        r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+        return (r * 299 + g * 587 + b * 114) / 1000 > 140
+
     def _setup_window(self) -> None:
         self.title("Выбор сотрудников")
         self.geometry("600x400")
@@ -119,8 +176,8 @@ class EmployeeSelectDialog(ctk.CTkToplevel):
         ctk.CTkButton(
             btn_frame,
             text="Отмена",
-            fg_color="gray",
-            hover_color="darkgray",
+            fg_color="gray40",
+            hover_color="gray30",
             command=self._on_cancel
         ).pack(side="left", expand=True, fill="x", padx=(0, 5))
 

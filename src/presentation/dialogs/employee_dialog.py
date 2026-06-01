@@ -1,6 +1,5 @@
 # src/presentation/dialogs/employee_dialog.py
 """
-src/presentation/dialogs/employee_dialog.py
 Унифицированный диалог сотрудника: создание / просмотр / редактирование.
 
 Режимы:
@@ -44,17 +43,17 @@ class EmployeeDialog(ctk.CTkToplevel):
     _PAD_Y: int = 6
 
     def __init__(
-        self,
-        master: ctk.CTk,
-        logger: logging.Logger,
-        on_save: Callable[
-            [Optional[UUID], Union[EmployeeCreateSchema, EmployeeUpdateSchema]], None
-        ],
-        mode: str = "create",
-        employee: Optional[EmployeeReadSchema] = None,
-        prefill_data: Optional[dict] = None,
-        on_view_tasks: Optional[Callable[[EmployeeReadSchema], None]] = None,
-        **kwargs,
+            self,
+            master: ctk.CTk,
+            logger: logging.Logger,
+            on_save: Callable[
+                [Optional[UUID], Union[EmployeeCreateSchema, EmployeeUpdateSchema]], None
+            ],
+            mode: str = "create",
+            employee: Optional[EmployeeReadSchema] = None,
+            prefill_data: Optional[dict] = None,
+            on_view_tasks: Optional[Callable[[EmployeeReadSchema], None]] = None,
+            **kwargs,
     ) -> None:
         super().__init__(master, **kwargs)
         self._logger = logger
@@ -86,6 +85,10 @@ class EmployeeDialog(ctk.CTkToplevel):
 
         self._setup_window()
         self._create_widgets()
+
+        # ✅ Применяем тему после создания виджетов
+        self._apply_theme_to_self()
+
         self._populate_fields()
         self._apply_mode()
 
@@ -99,8 +102,34 @@ class EmployeeDialog(ctk.CTkToplevel):
         )
 
     # ------------------------------------------------------------------
-    # Window setup
+    # Theme & Window Setup
     # ------------------------------------------------------------------
+    def _apply_theme_to_self(self) -> None:
+        """Применяет цвета темы к диалогу и его элементам."""
+        root = self.winfo_toplevel()
+        if hasattr(root, '_theme_colors'):
+            colors = root._theme_colors
+            dialog_bg = colors.get("dialog_bg", "#FFFFFF")
+            border_color = colors.get("border_color", "#C0C0C0")
+
+            self.configure(fg_color=dialog_bg)
+            self._update_borders(self, border_color)
+        else:
+            self.configure(fg_color="#FFFFFF")
+            self._update_borders(self, "#C0C0C0")
+
+    def _update_borders(self, widget, border_color: str) -> None:
+        """Рекурсивно добавляет границы полям ввода."""
+        try:
+            w_class = widget.__class__.__name__
+            if w_class in ("CTkEntry", "CTkTextbox", "CTkComboBox"):
+                widget.configure(border_width=1, border_color=border_color)
+
+            for child in widget.winfo_children():
+                self._update_borders(child, border_color)
+        except Exception:
+            pass
+
     def _setup_window(self) -> None:
         titles = {"create": "Новый сотрудник", "view": "Карточка сотрудника", "edit": "Редактирование"}
         self.title(titles.get(self._mode, "Сотрудник"))
@@ -167,7 +196,8 @@ class EmployeeDialog(ctk.CTkToplevel):
         left_col = ctk.CTkFrame(content, fg_color="transparent")
         left_col.pack(side="left", fill="both", expand=True, padx=(0, self._PAD_X // 2))
 
-        ctk.CTkLabel(left_col, text="Личные данные", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(0, 4))
+        ctk.CTkLabel(left_col, text="Личные данные", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w",
+                                                                                                    pady=(0, 4))
         self._entry_last_name = self._add_field(left_col, "Фамилия *", placeholder="Иванов")
         self._entry_first_name = self._add_field(left_col, "Имя *", placeholder="Иван")
         self._entry_middle_name = self._add_field(left_col, "Отчество", placeholder="Иванович")
@@ -181,14 +211,16 @@ class EmployeeDialog(ctk.CTkToplevel):
 
         self._entry_birth_day = ctk.CTkEntry(date_row, width=40, placeholder_text="ДД")
         self._entry_birth_day.pack(side="left", padx=(0, 4))
-        self._entry_birth_day.bind("<KeyRelease>", lambda e: self._auto_tab(e, self._entry_birth_day, self._entry_birth_month, 2))
+        self._entry_birth_day.bind("<KeyRelease>",
+                                   lambda e: self._auto_tab(e, self._entry_birth_day, self._entry_birth_month, 2))
         self._entry_birth_day.bind("<FocusOut>", lambda e: self._pad_date_field(self._entry_birth_day, 2))
 
         ctk.CTkLabel(date_row, text="/").pack(side="left")
 
         self._entry_birth_month = ctk.CTkEntry(date_row, width=40, placeholder_text="ММ")
         self._entry_birth_month.pack(side="left", padx=(4, 4))
-        self._entry_birth_month.bind("<KeyRelease>", lambda e: self._auto_tab(e, self._entry_birth_month, self._entry_birth_year, 2))
+        self._entry_birth_month.bind("<KeyRelease>",
+                                     lambda e: self._auto_tab(e, self._entry_birth_month, self._entry_birth_year, 2))
         self._entry_birth_month.bind("<FocusOut>", lambda e: self._pad_date_field(self._entry_birth_month, 2))
 
         ctk.CTkLabel(date_row, text="/").pack(side="left")
@@ -311,7 +343,7 @@ class EmployeeDialog(ctk.CTkToplevel):
             self._btn_primary.configure(text="Сохранить", command=self._on_save_click)
             self._btn_secondary.configure(text="Отмена", command=self._on_cancel)
             if self._btn_tasks:
-                self._btn_tasks.configure(state="disabled") # Скрываем или дизейблим для создания
+                self._btn_tasks.configure(state="disabled")
 
     def _on_view_tasks_click(self) -> None:
         """Обработчик кнопки 'Задачи'."""
@@ -439,7 +471,7 @@ class EmployeeDialog(ctk.CTkToplevel):
         raw_email = self._entry_email.get().strip() if self._entry_email else ""
         raw_phone = self._entry_phone.get().strip() if self._entry_phone else ""
 
-        # ✅ Нормализация: пустые строки опциональных полей → None
+        # Нормализация: пустые строки опциональных полей → None
         common_data = {
             "last_name": raw_last_name,
             "first_name": raw_first_name,
@@ -478,7 +510,6 @@ class EmployeeDialog(ctk.CTkToplevel):
             log_ui_event(self._logger, widget="EmployeeDialog", event="VALIDATION_ERROR", data=str(exc))
 
         except Exception as exc:
-            # ✅ Ловим InvalidEmployeeNameError, DuplicateEmployeeError и т.д.
             messagebox.showerror("Ошибка сохранения", str(exc), parent=self)
             log_ui_event(self._logger, widget="EmployeeDialog", event="SAVE_ERROR", data=str(exc))
 

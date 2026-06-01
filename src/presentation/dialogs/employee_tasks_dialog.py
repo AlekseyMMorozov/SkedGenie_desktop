@@ -56,7 +56,65 @@ class EmployeeTasksDialog(ctk.CTkToplevel):
 
         self._setup_window()
         self._create_widgets()
+
+        # ✅ Применяем тему после создания виджетов
+        self._apply_theme_to_self()
+
         self._populate_table()
+
+    # ------------------------------------------------------------------
+    # Theme & Window Setup
+    # ------------------------------------------------------------------
+    def _apply_theme_to_self(self) -> None:
+        """Применяет цвета темы к диалогу и таблице."""
+        root = self.winfo_toplevel()
+        if hasattr(root, '_theme_colors'):
+            colors = root._theme_colors
+            dialog_bg = colors.get("dialog_bg", "#FFFFFF")
+            border_color = colors.get("border_color", "#C0C0C0")
+
+            self.configure(fg_color=dialog_bg)
+            self._configure_treeview_style(dialog_bg, border_color)
+        else:
+            self.configure(fg_color="#FFFFFF")
+            self._configure_treeview_style("#FFFFFF", "#C0C0C0")
+
+    def _configure_treeview_style(self, bg_color: str, border_color: str) -> None:
+        """Настраивает стиль Treeview под текущую тему."""
+        style = ttk.Style()
+        style.theme_use("clam")
+
+        # Определяем цвет текста в зависимости от яркости фона
+        text_color = "#000000" if self._is_light_color(bg_color) else "#FFFFFF"
+        heading_bg = "#E0E0E0" if self._is_light_color(bg_color) else "#3A3A3A"
+
+        style.configure(
+            "Treeview",
+            background=bg_color,
+            foreground=text_color,
+            fieldbackground=bg_color,
+            rowheight=28,
+            font=("Segoe UI", 10),
+            borderwidth=0,
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=heading_bg,
+            foreground=text_color,
+            font=("Segoe UI", 10, "bold"),
+            relief="flat",
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", "#1F6AA5")],
+            foreground=[("selected", "#FFFFFF")],
+        )
+
+    @staticmethod
+    def _is_light_color(hex_color: str) -> bool:
+        hex_color = hex_color.lstrip("#")
+        r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+        return (r * 299 + g * 587 + b * 114) / 1000 > 140
 
     def _setup_window(self) -> None:
         self.title(f"Задачи: {self._employee_name}")
@@ -104,15 +162,9 @@ class EmployeeTasksDialog(ctk.CTkToplevel):
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
 
-        # Контекстное меню заголовка для изменения порядка столбцов
+        # Контекстное меню заголовка
         self._header_menu = Menu(self._tree, tearoff=0)
         self._tree.bind("<Button-3>", self._on_tree_right_click)
-
-        # Настройка стиля
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("Treeview", rowheight=28, font=("Segoe UI", 10))
-        style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
 
         # Кнопки управления
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -121,8 +173,8 @@ class EmployeeTasksDialog(ctk.CTkToplevel):
         ctk.CTkButton(
             btn_frame,
             text="Закрыть",
-            fg_color="gray",
-            hover_color="darkgray",
+            fg_color="gray40",
+            hover_color="gray30",
             command=self.destroy
         ).pack(side="left", expand=True, fill="x", padx=(0, 5))
 
@@ -130,8 +182,6 @@ class EmployeeTasksDialog(ctk.CTkToplevel):
             ctk.CTkButton(
                 btn_frame,
                 text="Добавить в задачу",
-                fg_color="#1f538d",
-                hover_color="#1a4575",
                 command=self._on_add_click
             ).pack(side="left", expand=True, fill="x", padx=(5, 5))
 
@@ -265,15 +315,15 @@ class EmployeeTasksDialog(ctk.CTkToplevel):
                 self._logger.error("Error removing employee from task: %s", e, exc_info=True)
 
     def remove_task_from_list(self, task_id: UUID) -> None:
-        """Удалить задачу из списка локально (вызывается после успешного async удаления)."""
-        self._tree.delete(str(task_id))
+        """Удалить задачу из списка локально."""
+        if self._tree.exists(str(task_id)):
+            self._tree.delete(str(task_id))
         self._tasks = [t for t in self._tasks if t.id != task_id]
         count = len(self._tasks)
         self._header_label.configure(text=f"Сотрудник участвует в {count} задачах:")
 
     def add_task_to_list(self, task: TaskReadSchema) -> None:
-        """Добавить задачу в список локально (вызывается после успешного async добавления)."""
-        # Проверяем, нет ли уже такой задачи
+        """Добавить задачу в список локально."""
         if any(t.id == task.id for t in self._tasks):
             return
 

@@ -42,7 +42,7 @@ from src.presentation.controllers.engagement_template_controller import Engageme
 from src.presentation.controllers.engagement_type_controller import EngagementTypeController
 from src.presentation.controllers.task_controller import TaskController
 from src.presentation.main_window import MainWindow
-from src.presentation.settings import Settings
+from src.presentation.settings import Settings, AppSettings
 
 # Константы
 DATABASE_URL: str = "sqlite+aiosqlite:///./data/skedgenie.db"
@@ -68,14 +68,17 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Этап 2: Загрузка пользовательских настроек
     # ------------------------------------------------------------------
+    settings_manager = None
     try:
         logger.info("Этап 2: Загрузка настроек...")
         settings_manager = Settings(SETTINGS_PATH, logger=logger)
         app_settings = settings_manager.load()
 
+        # ✅ Исправлен доступ к вложенным полям ui
+        ui = app_settings.ui
         logger.debug(
             "Настройки: font_size=%s, appearance=%s, color_theme=%s",
-            app_settings.font_size.name,
+            ui.font_size.name,
             app_settings.appearance_mode,
             app_settings.color_theme,
         )
@@ -84,7 +87,6 @@ def main() -> None:
             "Не удалось загрузить настройки, используются дефолтные: %s",
             exc,
         )
-        from src.presentation.settings import AppSettings
         app_settings = AppSettings()
 
     # ------------------------------------------------------------------
@@ -195,7 +197,7 @@ def main() -> None:
             employee_controller=employee_controller,
             engagement_type_controller=engagement_type_controller,
             engagement_template_controller=engagement_template_controller,
-            color_service=color_service,  # ✅ Передаем сервис цветов
+            color_service=color_service,
             logger=logger,
             settings=settings_manager,
         )
@@ -259,4 +261,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-  

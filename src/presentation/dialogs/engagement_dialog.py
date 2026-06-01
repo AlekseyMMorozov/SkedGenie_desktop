@@ -31,7 +31,6 @@ class EngagementDialog(ctk.CTkToplevel):
     """Единый диалог для управления Задействованием (Тип + Шаблон)."""
 
     RECURRENCE_OPTIONS = ["Произвольно", "Ежедневно", "Еженедельно", "Ежемесячно"]
-    DIALOG_BG_COLOR = "#E3F2FD"
     HEX_PATTERN = re.compile(r'^#[0-9A-Fa-f]{6}$')
 
     # Маппинг для отображения русских названий в ComboBox
@@ -71,10 +70,11 @@ class EngagementDialog(ctk.CTkToplevel):
         self._engagement_type = engagement_type
         self._available_types = available_types or []
 
-        self.configure(fg_color=self.DIALOG_BG_COLOR)
-
         self._setup_window()
         self._create_widgets()
+
+        # ✅ Применяем тему после создания виджетов
+        self._apply_theme_to_self()
 
         if self._mode == "edit":
             self._populate_fields()
@@ -85,7 +85,7 @@ class EngagementDialog(ctk.CTkToplevel):
             self._end_hour_entry.insert(0, "11")
             self._end_min_entry.insert(0, "00")
 
-            # ✅ Генерация уникального цвета для нового типа
+            # Генерация уникального цвета для нового типа
             existing_colors = [t.color_hex for t in self._available_types if t.color_hex]
             try:
                 new_color = self._color_service.generate_unique_color(existing_colors)
@@ -99,6 +99,36 @@ class EngagementDialog(ctk.CTkToplevel):
         # Инициализация состояния видимости полей
         self._on_duration_type_change(None)
 
+    # ------------------------------------------------------------------
+    # Theme & Window Setup
+    # ------------------------------------------------------------------
+    def _apply_theme_to_self(self) -> None:
+        """Применяет цвета темы к диалогу и его элементам."""
+        root = self.winfo_toplevel()
+        if hasattr(root, '_theme_colors'):
+            colors = root._theme_colors
+            dialog_bg = colors.get("dialog_bg", "#FFFFFF")
+            border_color = colors.get("border_color", "#C0C0C0")
+
+            self.configure(fg_color=dialog_bg)
+            self._update_borders(self, border_color)
+        else:
+            # Fallback на безопасный светлый оттенок
+            self.configure(fg_color="#F5F5F5")
+            self._update_borders(self, "#C0C0C0")
+
+    def _update_borders(self, widget, border_color: str) -> None:
+        """Рекурсивно добавляет границы полям ввода."""
+        try:
+            w_class = widget.__class__.__name__
+            if w_class in ("CTkEntry", "CTkComboBox", "CTkTextbox"):
+                widget.configure(border_width=1, border_color=border_color)
+
+            for child in widget.winfo_children():
+                self._update_borders(child, border_color)
+        except Exception:
+            pass
+
     def _setup_window(self) -> None:
         title = "Новое задействование" if self._mode == "create" else "Изменить задействование"
         self.title(title)
@@ -111,7 +141,8 @@ class EngagementDialog(ctk.CTkToplevel):
         btn_frame.pack(fill="x", padx=20, pady=(15, 10))
         ctk.CTkButton(btn_frame, text="Сохранить", width=120, command=self._on_save_click).pack(side="right",
                                                                                                 padx=(5, 0))
-        ctk.CTkButton(btn_frame, text="Отмена", width=120, fg_color="gray", command=self.destroy).pack(side="right")
+        ctk.CTkButton(btn_frame, text="Отмена", width=120, fg_color="gray40", hover_color="gray30",
+                      command=self.destroy).pack(side="right")
 
         container = ctk.CTkFrame(self, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=20, pady=(0, 20))
@@ -262,11 +293,9 @@ class EngagementDialog(ctk.CTkToplevel):
         start_mins = start_t.hour * 60 + start_t.minute
         end_mins = end_t.hour * 60 + end_t.minute
 
-        # ✅ Единая логика расчета: Суточные всегда +24ч к концу
         if dtype == DurationType.DAILY.value:
             end_mins += 24 * 60
         else:
-            # Короткие: если конец < начала, то +24ч (ночная смена)
             if end_mins < start_mins:
                 end_mins += 24 * 60
             elif end_mins == start_mins:
@@ -290,10 +319,12 @@ class EngagementDialog(ctk.CTkToplevel):
             self._duration_label.configure(text=text, text_color="#1565C0")
 
     def _open_new_type_dialog(self) -> None:
+        # Используем цвет текущего диалога для input dialog
+        current_fg = self.cget("fg_color")
         dialog = ctk.CTkInputDialog(
             text="Введите название новой группы:",
             title="Новая группа",
-            fg_color=self.DIALOG_BG_COLOR
+            fg_color=current_fg
         )
         new_category = dialog.get_input()
         if new_category and new_category.strip():
@@ -367,7 +398,12 @@ class EngagementDialog(ctk.CTkToplevel):
         name_val = self._name_entry.get().strip()
         short_name_val = self._short_name_entry.get().strip()
         errors = []
-        reset_color = "#999999"
+
+        # Получаем актуальный цвет границ из темы
+        root = self.winfo_toplevel()
+        reset_color = "#C0C0C0"
+        if hasattr(root, '_theme_colors'):
+            reset_color = root._theme_colors.get("border_color", "#C0C0C0")
 
         if not name_val:
             errors.append("• Полное название")
@@ -423,7 +459,6 @@ class EngagementDialog(ctk.CTkToplevel):
                 start_mins = start_t.hour * 60 + start_t.minute
                 end_mins = end_t.hour * 60 + end_t.minute
 
-                # ✅ Сохраняем длительность по тем же правилам, что и показываем
                 if dtype == DurationType.DAILY.value:
                     end_mins += 24 * 60
                 else:
@@ -502,7 +537,5 @@ class EngagementDialog(ctk.CTkToplevel):
         )
 
     def _handle_success(self):
-        # ✅ Безопасный вызов обновления списка через after(0),
-        # чтобы дождаться разблокировки AsyncBridge и завершения цикла событий
         self.after(0, self._on_success)
         self.destroy()

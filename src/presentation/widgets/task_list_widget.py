@@ -4,15 +4,16 @@
 
 Предоставляет интерфейс для просмотра и управления задачами планирования:
     - Таблица ``ttk.Treeview`` с колонками "№", "Название", "Тип периода".
-    - Панель инструментов: "Создать", "Изменить", "Удалить", "Обновить".
-    - Делегирует управление диалогами и сохранение :class:`TaskDialogCoordinator`.
-    - Автоматическое обновление таблицы после каждой операции.
+    - Панель инструментов: "Создать", "Просмотреть", "Удалить", "Обновить".
+    - Сортировка по клику на заголовок и перестановка столбцов через ПКМ.
+    - Делегирует управление диалогами :class:`TaskDialogCoordinator`.
 """
 from __future__ import annotations
 
 import logging
-from tkinter import messagebox, ttk
-from typing import Optional
+from tkinter import Menu, messagebox, ttk
+from typing import List, Optional
+from uuid import UUID
 
 import customtkinter as ctk
 
@@ -24,30 +25,26 @@ from src.presentation.controllers.employee_controller import EmployeeController
 from src.presentation.controllers.task_controller import TaskController
 from src.presentation.widgets.task_dialog_coordinator import TaskDialogCoordinator
 
+# Порядок столбцов по умолчанию
+_DEFAULT_COLUMNS: list[tuple[str, str, int]] = [
+    ("num", "№", 60),
+    ("name", "Название", 400),
+    ("period_type", "Тип периода", 150),
+]
+
 
 class TaskListWidget(ctk.CTkFrame):
-    """Виджет вкладки "Задачи" с таблицей и кнопками CRUD.
-
-    Attributes:
-        _controller: Контроллер задач.
-        _bridge: Мост для вызова async-методов из GUI-потока.
-        _logger: Логгер для событий виджета.
-        _coordinator: Координатор диалогов задач.
-        _treeview: ``ttk.Treeview`` с данными задач.
-        _tasks_by_id: Маппинг ``item_id → TaskReadSchema``.
-        _task_counter: Счётчик строк для отображения "№".
-    """
+    """Виджет вкладки "Задачи" с таблицей и кнопками CRUD."""
 
     def __init__(
-        self,
-        master: ctk.CTk,
-        controller: TaskController,
-        bridge: AsyncBridge,
-        logger: logging.Logger,
-        employee_controller: Optional[EmployeeController] = None,
-        **kwargs,
+            self,
+            master: ctk.CTk,
+            controller: TaskController,
+            bridge: AsyncBridge,
+            logger: logging.Logger,
+            employee_controller: Optional[EmployeeController] = None,
+            **kwargs,
     ) -> None:
-        """Инициализация виджета вкладки задач."""
         super().__init__(master, **kwargs)
         self._master_root = master
         self._controller = controller
@@ -63,272 +60,246 @@ class TaskListWidget(ctk.CTkFrame):
             on_success=self.refresh,
         )
 
-        self._tasks_by_id: dict[str, TaskReadSchema] = {}
-        self._task_counter: int = 0
+        # Текущий порядок столбцов и состояние сортировки
+        self._columns: list[tuple[str, str, int]] = list(_DEFAULT_COLUMNS)
+        self._sort_column: str = "num"
+        self._sort_reverse: bool = False
+        self._tasks: list[TaskReadSchema] = []
 
         self._create_widgets()
-        self._logger.debug("TaskListWidget: виджет вкладки 'Задачи' создан")
+        log_ui_event(self._logger, widget="TaskListWidget", event="CREATED")
 
     # ------------------------------------------------------------------
-    # Создание UI
+    # Widgets
     # ------------------------------------------------------------------
     def _create_widgets(self) -> None:
-        """Создание панели инструментов и таблицы."""
-        # Панель инструментов
-        toolbar = ctk.CTkFrame(self, fg_color="transparent")
-        toolbar.pack(fill="x", padx=10, pady=(10, 5))
+        # Панель кнопок (единый стиль с EmployeeListWidget)
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=8, pady=(8, 4))
 
-        self._btn_create = ctk.CTkButton(
-            toolbar, text="Создать", width=100,
-            command=self._on_create_click,
-        )
-        self._btn_create.pack(side="left", padx=(0, 5))
+        ctk.CTkButton(btn_frame, text="Создать", width=100, command=self._on_create_click).pack(side="left", padx=2)
+        ctk.CTkButton(btn_frame, text="Просмотреть", width=110, command=self._on_view_click).pack(side="left", padx=2)
+        ctk.CTkButton(btn_frame, text="Удалить", width=90, fg_color="#d9534f", hover_color="#c9302c",
+                      command=self._on_delete_click).pack(side="left", padx=2)
+        ctk.CTkButton(btn_frame, text="⟳ Обновить", width=100, fg_color="gray40", hover_color="gray30",
+                      command=self._on_refresh_click).pack(side="right", padx=2)
 
-        self._btn_update = ctk.CTkButton(
-            toolbar, text="Изменить", width=100,
-            command=self._on_update_click,
-        )
-        self._btn_update.pack(side="left", padx=(0, 5))
+        # Таблица
+        tree_frame = ctk.CTkFrame(self, fg_color="transparent")
+        tree_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
-        self._btn_delete = ctk.CTkButton(
-            toolbar, text="Удалить", width=100,
-            fg_color="#c0392b", hover_color="#a93226",
-            command=self._on_delete_click,
-        )
-        self._btn_delete.pack(side="left", padx=(0, 5))
+        col_ids = [c[0] for c in self._columns]
+        self._tree = ttk.Treeview(tree_frame, columns=col_ids, show="headings", selectmode="browse")
 
-        self._btn_refresh = ctk.CTkButton(
-            toolbar, text="Обновить", width=100,
-            fg_color="gray", hover_color="darkgray",
-            command=self._on_refresh_click,
-        )
-        self._btn_refresh.pack(side="right")
+        for col_id, heading, width in self._columns:
+            self._tree.heading(col_id, text=heading,
+                               command=lambda c=col_id: self._on_heading_click(c))
+            self._tree.column(col_id, width=width, minwidth=40)
 
-        # Контейнер для таблицы
-        tree_container = ctk.CTkFrame(self, fg_color="transparent")
-        tree_container.pack(fill="both", expand=True, padx=10, pady=5)
+        scrollbar_y = ttk.Scrollbar(tree_frame, orient="vertical", command=self._tree.yview)
+        scrollbar_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self._tree.xview)
+        self._tree.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
+
+        self._tree.grid(row=0, column=0, sticky="nsew")
+        scrollbar_y.grid(row=0, column=1, sticky="ns")
+        scrollbar_x.grid(row=1, column=0, sticky="ew")
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        # Контекстное меню заголовка
+        self._header_menu = Menu(self._tree, tearoff=0)
+        self._tree.bind("<Button-3>", self._on_tree_right_click)
+
+        # Двойной клик → просмотр/редактирование
+        self._tree.bind("<Double-1>", lambda e: self._on_view_click())
 
         self._configure_treeview_style()
 
-        columns = ("num", "name", "period_type")
-        self._treeview = ttk.Treeview(
-            tree_container,
-            columns=columns,
-            show="headings",
-            selectmode="browse",
-        )
-
-        self._treeview.heading("num", text="№", anchor="center")
-        self._treeview.heading("name", text="Название", anchor="w")
-        self._treeview.heading("period_type", text="Тип периода", anchor="w")
-
-        self._treeview.column("num", width=60, anchor="center", stretch=False)
-        self._treeview.column("name", width=400, anchor="w")
-        self._treeview.column("period_type", width=150, anchor="w")
-
-        scrollbar = ttk.Scrollbar(
-            tree_container, orient="vertical", command=self._treeview.yview,
-        )
-        self._treeview.configure(yscrollcommand=scrollbar.set)
-
-        self._treeview.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        # Двойной клик — тоже редактирование
-        self._treeview.bind("<Double-1>", lambda e: self._on_update_click())
-
     def _configure_treeview_style(self) -> None:
-        """Настройка стиля ``ttk.Treeview`` под тему CustomTkinter."""
         style = ttk.Style()
-        try:
-            style.theme_use("clam")
-        except Exception:
-            self._logger.debug("TaskListWidget: тема 'clam' недоступна")
-
-        appearance = ctk.get_appearance_mode()
-        if appearance == "Dark":
-            bg, fg = "#2b2b2b", "#dcdcdc"
-            selected_bg, selected_fg = "#1f538d", "#ffffff"
-            heading_bg = "#1f1f1f"
-        else:
-            bg, fg = "#ffffff", "#000000"
-            selected_bg, selected_fg = "#1f538d", "#ffffff"
-            heading_bg = "#e0e0e0"
-
-        style.configure(
-            "Treeview",
-            background=bg, foreground=fg, fieldbackground=bg, rowheight=28,
-        )
-        style.configure(
-            "Treeview.Heading",
-            background=heading_bg, foreground=fg,
-            font=("Segoe UI", 10, "bold"),
-        )
-        style.map(
-            "Treeview",
-            background=[("selected", selected_bg)],
-            foreground=[("selected", selected_fg)],
-        )
+        style.theme_use("clam")
+        style.configure("Treeview", rowheight=28, font=("Segoe UI", 10))
+        style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
 
     # ------------------------------------------------------------------
-    # Public API
+    # Sorting
+    # ------------------------------------------------------------------
+    def _on_heading_click(self, column: str) -> None:
+        if self._sort_column == column:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_column = column
+            self._sort_reverse = False
+
+        self._populate_table(self._tasks)
+        log_ui_event(self._logger, widget="TaskListWidget", event="SORT",
+                     data=f"column={column}, reverse={self._sort_reverse}")
+
+    def _get_sort_key(self, task: TaskReadSchema) -> tuple:
+        key_map = {
+            "num": 0,  # Номер вычисляется после сортировки
+            "name": task.name.lower(),
+            "period_type": PERIOD_TYPE_RU.get(task.period_type, task.period_type).lower(),
+        }
+        return key_map.get(self._sort_column, "")
+
+    # ------------------------------------------------------------------
+    # Column reordering via context menu
+    # ------------------------------------------------------------------
+    def _on_tree_right_click(self, event) -> None:
+        region = self._tree.identify_region(event.x, event.y)
+        if region != "heading":
+            return
+
+        col_id = self._tree.identify_column(event.x)
+        try:
+            idx = int(col_id.replace("#", "")) - 1
+        except ValueError:
+            return
+
+        if idx < 0 or idx >= len(self._columns):
+            return
+
+        self._header_menu.delete(0, "end")
+        current_name = self._columns[idx][1]
+
+        move_menu = Menu(self._header_menu, tearoff=0)
+        for target_idx, (_, target_name, _) in enumerate(self._columns):
+            if target_idx != idx:
+                label = f"{'↑' if target_idx < idx else '↓'} Перед «{target_name}»"
+                move_menu.add_command(
+                    label=label,
+                    command=lambda t=target_idx: self._move_column(idx, t),
+                )
+        self._header_menu.add_cascade(label=f"«{current_name}» → Переместить", menu=move_menu)
+        self._header_menu.post(event.x_root, event.y_root)
+
+    def _move_column(self, from_idx: int, to_idx: int) -> None:
+        col = self._columns.pop(from_idx)
+        if to_idx > from_idx:
+            to_idx -= 1
+        self._columns.insert(to_idx, col)
+
+        col_ids = [c[0] for c in self._columns]
+        self._tree["columns"] = col_ids
+        for col_id, heading, width in self._columns:
+            self._tree.heading(col_id, text=heading,
+                               command=lambda c=col_id: self._on_heading_click(c))
+            self._tree.column(col_id, width=width, minwidth=40)
+
+        self._populate_table(self._tasks)
+        log_ui_event(self._logger, widget="TaskListWidget", event="COLUMN_REORDERED",
+                     data=f"order={[c[0] for c in self._columns]}")
+
+    # ------------------------------------------------------------------
+    # Data
     # ------------------------------------------------------------------
     def refresh(self) -> None:
-        """Публичный метод для внешнего запуска обновления таблицы."""
-        self._on_refresh_click()
-
-    # ------------------------------------------------------------------
-    # Обработчики кнопок
-    # ------------------------------------------------------------------
-    def _on_create_click(self) -> None:
-        """Открытие диалога создания новой задачи."""
-        log_ui_event(self._logger, "TaskListWidget.btn_create", "click")
-        self._coordinator.open_create_dialog()
-
-    def _on_update_click(self) -> None:
-        """Открытие диалога редактирования выбранной задачи."""
-        log_ui_event(self._logger, "TaskListWidget.btn_update", "click")
-
-        selected = self._get_selected_task()
-        if selected is None:
-            messagebox.showinfo(
-                "Нет выбора",
-                "Выберите задачу в таблице для изменения.",
-                parent=self._master_root,
-            )
+        if not self._bridge.is_running():
             return
-
-        self._coordinator.open_edit_dialog(selected)
-
-    def _on_delete_click(self) -> None:
-        """Обработчик кнопки 'Удалить'."""
-        log_ui_event(self._logger, "TaskListWidget.btn_delete", "click")
-
-        selected = self._get_selected_task()
-        if selected is None:
-            messagebox.showinfo(
-                "Нет выбора",
-                "Выберите задачу в таблице для удаления.",
-                parent=self._master_root,
-            )
-            return
-
-        confirmed = messagebox.askyesno(
-            "Подтверждение удаления",
-            f"Вы действительно хотите удалить задачу '{selected.name}'?",
-            parent=self._master_root,
-        )
-        if not confirmed:
-            self._logger.debug(
-                "TaskListWidget: пользователь отменил удаление задачи ID=%s",
-                selected.id,
-            )
-            return
-
-        log_user_action(
-            self._logger,
-            "Удаление задачи (подтверждено)",
-            f"ID: {selected.id}, Имя: {selected.name}",
-        )
         self._bridge.run(
-            coro=self._controller.delete_task(selected.id),
-            on_success=lambda _: self._on_delete_success(selected.id),
-            on_error=self._on_delete_error,
-        )
-
-    def _on_refresh_click(self) -> None:
-        """Обработчик кнопки 'Обновить'."""
-        log_ui_event(self._logger, "TaskListWidget.btn_refresh", "click")
-        self._logger.debug("TaskListWidget: обновление списка задач из БД")
-        self._bridge.run(
-            coro=self._controller.get_all_tasks(),
+            self._controller.get_all_tasks(),
             on_success=self._populate_table,
             on_error=self._on_refresh_error,
         )
 
-    # ------------------------------------------------------------------
-    # Обработчики операций
-    # ------------------------------------------------------------------
-    def _on_delete_success(self, deleted_id: UUID) -> None:
-        """Обработчик успешного удаления задачи."""
-        log_user_action(
-            self._logger,
-            "Задача удалена из таблицы",
-            f"ID: {deleted_id}",
-        )
-        self.refresh()
-
-    def _on_delete_error(self, exc: Exception) -> None:
-        """Обработчик ошибки удаления."""
-        log_user_error(
-            self._logger,
-            "Удаление задачи",
-            f"{type(exc).__name__}: {exc}",
-        )
-        messagebox.showerror(
-            "Ошибка удаления",
-            f"Не удалось удалить задачу:\n{exc}",
-            parent=self._master_root,
-        )
-
-    def _on_refresh_error(self, exc: Exception) -> None:
-        """Обработчик ошибки обновления списка."""
-        log_user_error(
-            self._logger,
-            "Обновление списка задач",
-            f"{type(exc).__name__}: {exc}",
-        )
-        messagebox.showerror(
-            "Ошибка обновления",
-            f"Не удалось загрузить список задач:\n{exc}",
-            parent=self._master_root,
-        )
-
-    # ------------------------------------------------------------------
-    # Вспомогательные методы
-    # ------------------------------------------------------------------
     def _populate_table(self, tasks: list[TaskReadSchema]) -> None:
-        """Заполнить таблицу задачами (полная перезапись) с защитой от гонки инициализации."""
         if not self.winfo_exists():
-            self._logger.debug("TaskListWidget: виджет уничтожён, пропуск обновления таблицы")
             return
-
-        if not hasattr(self, '_treeview') or self._treeview is None:
-            self._logger.debug("TaskListWidget: Treeview не инициализирован, пропуск обновления")
+        if not hasattr(self, '_tree') or self._tree is None:
             return
 
         try:
-            for item_id in self._treeview.get_children():
-                self._treeview.delete(item_id)
-            self._tasks_by_id.clear()
-            self._task_counter = 0
+            self._tasks = tasks
 
-            for task in tasks:
+            # Сортировка
+            sorted_tasks = sorted(tasks, key=self._get_sort_key, reverse=self._sort_reverse)
+
+            # Очистка
+            for item in self._tree.get_children():
+                self._tree.delete(item)
+
+            # Заполнение
+            for idx, task in enumerate(sorted_tasks, start=1):
                 period_localized = PERIOD_TYPE_RU.get(task.period_type, task.period_type)
-                self._task_counter += 1
-                item_id = self._treeview.insert(
-                    parent="",
-                    index="end",
-                    values=(self._task_counter, task.name, period_localized),
-                )
-                self._tasks_by_id[item_id] = task
+                values_map = {
+                    "num": idx,
+                    "name": task.name,
+                    "period_type": period_localized,
+                }
+                values = tuple(values_map.get(c[0], "") for c in self._columns)
+                self._tree.insert("", "end", iid=str(task.id), values=values)
 
-            self._logger.debug(
-                "TaskListWidget: таблица обновлена, задач: %d",
-                len(tasks),
-            )
+            log_ui_event(self._logger, widget="TaskListWidget",
+                         event="TABLE_POPULATED", data=f"count={len(tasks)}")
         except Exception as exc:
-            self._logger.error(
-                "TaskListWidget: критическая ошибка при заполнении таблицы: %s",
-                exc,
-                exc_info=True
-            )
+            self._logger.error("TaskListWidget: ошибка заполнения таблицы: %s", exc, exc_info=True)
 
+    def _on_refresh_error(self, exc: Exception) -> None:
+        self._logger.error("Failed to load tasks: %s", exc, exc_info=True)
+        log_user_error(self._logger, action="LOAD_TASKS", error=str(exc))
+
+    # ------------------------------------------------------------------
+    # Selection helpers
+    # ------------------------------------------------------------------
     def _get_selected_task(self) -> Optional[TaskReadSchema]:
-        """Получить выбранную в таблице задачу."""
-        selection = self._treeview.selection()
+        selection = self._tree.selection()
         if not selection:
+            messagebox.showinfo("Внимание", "Выберите задачу в таблице", parent=self)
             return None
-        item_id = selection[0]
-        return self._tasks_by_id.get(item_id)
+        task_id = UUID(selection[0])
+        for task in self._tasks:
+            if task.id == task_id:
+                return task
+        return None
 
+    # ------------------------------------------------------------------
+    # Actions
+    # ------------------------------------------------------------------
+    def _on_create_click(self) -> None:
+        log_ui_event(self._logger, widget="TaskListWidget", event="CREATE_CLICKED")
+        self._coordinator.open_create_dialog()
+
+    def _on_view_click(self) -> None:
+        """Открытие диалога редактирования (в текущей логике TaskDialogCoordinator это edit)."""
+        task = self._get_selected_task()
+        if task is None:
+            return
+        log_ui_event(self._logger, widget="TaskListWidget", event="VIEW_CLICKED",
+                     data=f"task_id={task.id}")
+        # В TaskDialogCoordinator пока нет отдельного view-режима, используем edit
+        self._coordinator.open_edit_dialog(task)
+
+    def _on_delete_click(self) -> None:
+        task = self._get_selected_task()
+        if task is None:
+            return
+
+        confirmed = messagebox.askyesno(
+            "Подтверждение удаления",
+            f"Вы действительно хотите удалить задачу '{task.name}'?",
+            parent=self,
+        )
+        if not confirmed:
+            return
+
+        log_user_action(self._logger, action="DELETE_TASK_CONFIRMED",
+                        details=f"ID: {task.id}, Name: {task.name}")
+        self._bridge.run(
+            self._controller.delete_task(task.id),
+            on_success=lambda _: self._on_delete_success(task.id),
+            on_error=self._on_delete_error,
+        )
+
+    def _on_delete_success(self, deleted_id: UUID) -> None:
+        log_user_action(self._logger, action="DELETE_TASK_SUCCESS",
+                        details=f"ID: {deleted_id}")
+        self.refresh()
+
+    def _on_delete_error(self, exc: Exception) -> None:
+        self._logger.error("Delete failed: %s", exc, exc_info=True)
+        messagebox.showerror("Ошибка удаления", str(exc), parent=self)
+
+    def _on_refresh_click(self) -> None:
+        log_ui_event(self._logger, widget="TaskListWidget", event="REFRESH_CLICKED")
+        self.refresh()

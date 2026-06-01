@@ -113,12 +113,10 @@ class AsyncBridge:
                 self._safe_gui_call(on_error, RuntimeError("Bridge stopped"))
             return
 
-        # ✅ Блокировка от повторных кликов
-        if self._ui_locked:
-            self._logger.warning("AsyncBridge: операция проигнорирована (UI заблокирован)")
-            return
-
         # ✅ Блокируем UI ПЕРЕД отправкой задачи
+        # Примечание: проверка _ui_locked убрана, чтобы разрешить цепочки
+        # асинхронных вызовов (например, загрузка задачи -> загрузка сотрудников).
+        # Визуальная блокировка виджетов предотвращает повторные клики пользователя.
         self._safe_gui_call(self._set_ui_state, True)
 
         try:

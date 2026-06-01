@@ -3,26 +3,27 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
 import customtkinter as ctk
 
 from src.application.services.engagement_color_service import EngagementColorService
 from src.presentation.async_bridge import AsyncBridge
 from src.presentation.controllers.employee_controller import EmployeeController
-from src.presentation.controllers.task_controller import TaskController
-from src.presentation.controllers.engagement_type_controller import EngagementTypeController
 from src.presentation.controllers.engagement_template_controller import EngagementTemplateController
-from src.presentation.font_manager import FontManager, get_font_manager
+from src.presentation.controllers.engagement_type_controller import EngagementTypeController
+from src.presentation.controllers.task_controller import TaskController
+from src.presentation.font_manager import FontManager, FontSize, get_font_manager
+from src.presentation.settings import Settings
 from src.presentation.widgets.employee_list_widget import EmployeeListWidget
-from src.presentation.widgets.task_list_widget import TaskListWidget
 from src.presentation.widgets.engagement_management_widget import EngagementManagementWidget
+from src.presentation.widgets.settings_widget import SettingsWidget
+from src.presentation.widgets.task_list_widget import TaskListWidget
 
 
 class PageFactory:
     """Создает страницы для основного окна."""
 
-    # ✅ Константы разделов для идентификации страниц
     SECTION_TASKS: str = "tasks"
     SECTION_GRAPHS: str = "graphs"
     SECTION_EMPLOYEES: str = "employees"
@@ -39,6 +40,8 @@ class PageFactory:
             bridge: AsyncBridge,
             logger: logging.Logger,
             color_service: EngagementColorService,
+            settings: Optional[Settings] = None,
+            on_theme_changed: Optional[Callable[[str, FontSize], None]] = None,
     ) -> None:
         self._content_card = content_card
         self._task_controller = task_controller
@@ -48,6 +51,8 @@ class PageFactory:
         self._bridge = bridge
         self._logger = logger
         self._color_service = color_service
+        self._settings = settings
+        self._on_theme_changed = on_theme_changed
 
     def create_all_pages(self) -> tuple[
         dict[str, ctk.CTkFrame], Optional[TaskListWidget], Optional[EmployeeListWidget]]:
@@ -56,41 +61,30 @@ class PageFactory:
         task_widget = None
         employee_widget = None
 
+        title_font = fm.get_font("page_title") if fm else ctk.CTkFont(size=24, weight="bold")
+        subtitle_font = fm.get_font("subtitle") if fm else ctk.CTkFont(size=16)
+
         # Страница задач
-        tasks_page, task_widget = self._create_tasks_page(
-            fm.get_font("page_title") if fm else ctk.CTkFont(size=24, weight="bold"), fm
-        )
+        tasks_page, task_widget = self._create_tasks_page(title_font, fm)
         pages[self.SECTION_TASKS] = tasks_page
 
         # Страница сотрудников
-        employees_page, employee_widget = self._create_employees_page(
-            fm.get_font("page_title") if fm else ctk.CTkFont(size=24, weight="bold"), fm
-        )
+        employees_page, employee_widget = self._create_employees_page(title_font, fm)
         if employees_page:
             pages[self.SECTION_EMPLOYEES] = employees_page
 
         # Страница задействований
-        engagements_page = self._create_engagements_page(
-            fm.get_font("page_title") if fm else ctk.CTkFont(size=24, weight="bold"), fm
-        )
+        engagements_page = self._create_engagements_page(title_font, fm)
         pages[self.SECTION_ENGAGEMENTS] = engagements_page
 
-        # Заглушка для графиков (пока не реализовано)
+        # Страница графиков (заглушка)
         graphs_page = self._create_stub_page(
-            "Графики", "Раздел в разработке",
-            fm.get_font("page_title") if fm else ctk.CTkFont(size=24, weight="bold"),
-            fm.get_font("subtitle") if fm else ctk.CTkFont(size=16),
-            fm
+            "Графики", "Раздел в разработке", title_font, subtitle_font, fm
         )
         pages[self.SECTION_GRAPHS] = graphs_page
 
-        # Заглушка для настроек
-        settings_page = self._create_stub_page(
-            "Настройки", "Раздел в разработке",
-            fm.get_font("page_title") if fm else ctk.CTkFont(size=24, weight="bold"),
-            fm.get_font("subtitle") if fm else ctk.CTkFont(size=16),
-            fm
-        )
+        # Страница настроек
+        settings_page = self._create_settings_page(title_font, fm)
         pages[self.SECTION_SETTINGS] = settings_page
 
         return pages, task_widget, employee_widget
@@ -159,6 +153,29 @@ class PageFactory:
             bridge=self._bridge,
             logger=self._logger,
             color_service=self._color_service,
+        )
+        widget.pack(fill="both", expand=True)
+        return page
+
+    def _create_settings_page(self, title_font: ctk.CTkFont, fm: Optional[FontManager]) -> ctk.CTkFrame:
+        """Создать страницу настроек интерфейса."""
+        if self._settings is None or self._on_theme_changed is None:
+            return self._create_stub_page(
+                "Настройки", "Менеджер настроек недоступен",
+                title_font,
+                fm.get_font("subtitle") if fm else ctk.CTkFont(size=16),
+                fm
+            )
+
+        # SettingsWidget сам управляет своим заголовком и компоновкой,
+        # поэтому оборачиваем его в прозрачный контейнер без дублирования заголовка.
+        page = ctk.CTkFrame(self._content_card, fg_color="transparent")
+
+        widget = SettingsWidget(
+            master=page,
+            settings=self._settings,
+            logger=self._logger,
+            on_theme_changed=self._on_theme_changed,
         )
         widget.pack(fill="both", expand=True)
         return page
