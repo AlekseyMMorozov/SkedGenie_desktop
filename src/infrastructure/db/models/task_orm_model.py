@@ -31,6 +31,8 @@ class TaskORMModel(Base):
         period_start: Начало периода планирования (рассчитывается автоматически).
         period_end: Конец периода планирования (рассчитывается автоматически).
         employee_ids: JSON-строка со списком UUID сотрудников.
+        template_ids: JSON-строка со списком UUID шаблонов задействований,
+            привязанных к задаче.
         engagement_ids: JSON-строка со списком UUID типов задействований
             (соответствует ``duty_type_ids`` в :class:`PlanningTask`).
         reference_id: Внешний идентификатор/ссылка (опционально, до 255 символов).
@@ -66,6 +68,11 @@ class TaskORMModel(Base):
         nullable=False,
     )
     employee_ids: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="[]",
+    )
+    template_ids: Mapped[str] = mapped_column(
         String,
         nullable=False,
         default="[]",

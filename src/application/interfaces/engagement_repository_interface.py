@@ -18,6 +18,10 @@ class IEngagementRepository(ABC):
         """Получить задействование по ID."""
 
     @abstractmethod
+    async def get_all(self) -> List[Engagement]:
+        """Получить все задействования (для диалогов выбора)."""
+
+    @abstractmethod
     async def get_by_task_id(self, task_id: UUID) -> List[Engagement]:
         """Получить все задействования в рамках задачи-графика."""
 

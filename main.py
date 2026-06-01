@@ -33,7 +33,6 @@ from src.infrastructure.db.async_database_session import (
     get_session_factory,
 )
 from src.infrastructure.repositories.employee_repository import EmployeeSQLAlchemyRepository
-from src.infrastructure.repositories.engagement_repository import EngagementSQLAlchemyRepository
 from src.infrastructure.repositories.engagement_template_repository import EngagementTemplateSQLAlchemyRepository
 from src.infrastructure.repositories.engagement_type_repository import EngagementTypeSQLAlchemyRepository
 from src.infrastructure.repositories.task_repository import TaskSQLAlchemyRepository
@@ -74,7 +73,6 @@ def main() -> None:
         settings_manager = Settings(SETTINGS_PATH, logger=logger)
         app_settings = settings_manager.load()
 
-        # ✅ Исправлен доступ к вложенным полям ui
         ui = app_settings.ui
         logger.debug(
             "Настройки: font_size=%s, appearance=%s, color_theme=%s",
@@ -159,10 +157,9 @@ def main() -> None:
         )
         logger.debug("EmployeeController создан")
 
-        # --- Engagement-ветка ---
+        # --- Engagement Type & Template ветка (для Варианта A) ---
         engagement_type_repository = EngagementTypeSQLAlchemyRepository(session_factory)
         engagement_template_repository = EngagementTemplateSQLAlchemyRepository(session_factory)
-        engagement_repository = EngagementSQLAlchemyRepository(session_factory)
 
         color_service = EngagementColorService(logger)
 
@@ -175,7 +172,7 @@ def main() -> None:
             repository=engagement_template_repository,
             logger=logger,
         )
-        logger.debug("Engagement Controllers созданы")
+        logger.debug("Engagement Type & Template Controllers созданы")
 
         logger.info("Инфраструктура успешно создана")
     except Exception as exc:

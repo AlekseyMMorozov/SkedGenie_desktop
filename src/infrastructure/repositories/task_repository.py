@@ -59,6 +59,9 @@ class TaskSQLAlchemyRepository(ITaskRepository):
             employee_ids=json.dumps(
                 [str(uid) for uid in (domain.employee_ids or [])]
             ),
+            template_ids=json.dumps(
+                [str(tid) for tid in (domain.template_ids or [])]
+            ),
             engagement_ids=json.dumps(
                 [str(eid) for eid in (domain.duty_type_ids or [])]
             ),
@@ -79,6 +82,9 @@ class TaskSQLAlchemyRepository(ITaskRepository):
             period_end=orm.period_end,
             employee_ids=[
                 UUID(uid) for uid in json.loads(orm.employee_ids or "[]")
+            ],
+            template_ids=[
+                UUID(tid) for tid in json.loads(getattr(orm, 'template_ids', None) or "[]")
             ],
             duty_type_ids=[
                 UUID(eid) for eid in json.loads(orm.engagement_ids or "[]")
@@ -188,6 +194,9 @@ class TaskSQLAlchemyRepository(ITaskRepository):
             orm.period_end = task.period_end
             orm.employee_ids = json.dumps(
                 [str(uid) for uid in (task.employee_ids or [])]
+            )
+            orm.template_ids = json.dumps(
+                [str(tid) for tid in (task.template_ids or [])]
             )
             orm.engagement_ids = json.dumps(
                 [str(eid) for eid in (task.duty_type_ids or [])]

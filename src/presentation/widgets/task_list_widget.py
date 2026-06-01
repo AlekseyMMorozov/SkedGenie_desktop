@@ -22,6 +22,9 @@ from src.core.logging_config import log_ui_event, log_user_action, log_user_erro
 from src.domain.tasks.planning_task_model import PERIOD_TYPE_RU
 from src.presentation.async_bridge import AsyncBridge
 from src.presentation.controllers.employee_controller import EmployeeController
+from src.presentation.controllers.engagement_template_controller import (
+    EngagementTemplateController,
+)
 from src.presentation.controllers.task_controller import TaskController
 from src.presentation.widgets.task_dialog_coordinator import TaskDialogCoordinator
 
@@ -43,6 +46,7 @@ class TaskListWidget(ctk.CTkFrame):
             bridge: AsyncBridge,
             logger: logging.Logger,
             employee_controller: Optional[EmployeeController] = None,
+            engagement_template_controller: Optional[EngagementTemplateController] = None,
             **kwargs,
     ) -> None:
         super().__init__(master, **kwargs)
@@ -51,10 +55,17 @@ class TaskListWidget(ctk.CTkFrame):
         self._bridge = bridge
         self._logger = logger
 
+        if engagement_template_controller is None:
+            raise ValueError(
+                "TaskListWidget requires engagement_template_controller "
+                "for template selection in TaskDialog"
+            )
+
         self._coordinator = TaskDialogCoordinator(
             master=master,
             task_controller=controller,
             employee_controller=employee_controller,
+            engagement_template_controller=engagement_template_controller,
             bridge=bridge,
             logger=logger,
             on_success=self.refresh,

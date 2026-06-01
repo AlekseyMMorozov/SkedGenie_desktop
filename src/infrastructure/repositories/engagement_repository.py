@@ -63,6 +63,18 @@ class EngagementSQLAlchemyRepository(IEngagementRepository):
             task_ids = await self._get_task_ids(session, engagement_id)
             return self._to_domain(orm, task_ids)
 
+    async def get_all(self) -> List[Engagement]:
+        """Получить все задействования (для диалогов выбора)."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(EngagementORMModel).order_by(EngagementORMModel.start_at)
+            )
+            engagements = []
+            for orm in result.scalars().all():
+                task_ids = await self._get_task_ids(session, orm.id)
+                engagements.append(self._to_domain(orm, task_ids))
+            return engagements
+
     async def get_by_task_id(self, task_id: UUID) -> List[Engagement]:
         async with self._session_factory() as session:
             result = await session.execute(

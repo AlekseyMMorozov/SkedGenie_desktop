@@ -17,10 +17,12 @@ import logging
 from datetime import date
 from tkinter import messagebox
 from typing import Callable, List, Optional, Union
+from uuid import UUID
 
 import customtkinter as ctk
 
 from src.application.schemas.employee_schemas import EmployeeReadSchema
+from src.application.schemas.engagement_schemas import EngagementTemplateReadSchema
 from src.application.schemas.task_schemas import (
     TaskCreateSchema,
     TaskReadSchema,
@@ -29,6 +31,9 @@ from src.application.schemas.task_schemas import (
 from src.core.logging_config import log_ui_event, log_user_action
 from src.domain.tasks.planning_task_model import PeriodType
 from src.presentation.dialogs.employee_select_dialog import EmployeeSelectDialog
+from src.presentation.dialogs.engagement_template_select_dialog import (
+    EngagementTemplateSelectDialog,
+)
 
 
 class TaskDialog(ctk.CTkToplevel):
@@ -39,11 +44,12 @@ class TaskDialog(ctk.CTkToplevel):
             master: ctk.CTk,
             logger: logging.Logger,
             on_save: Callable[
-                [Optional, Union[TaskCreateSchema, TaskUpdateSchema]],
+                [Optional[UUID], Union[TaskCreateSchema, TaskUpdateSchema]],
                 None,
             ],
             task: Optional[TaskReadSchema] = None,
             available_employees: Optional[List[EmployeeReadSchema]] = None,
+            available_templates: Optional[List[EngagementTemplateReadSchema]] = None,
             **kwargs,
     ) -> None:
         super().__init__(master, **kwargs)
@@ -52,12 +58,19 @@ class TaskDialog(ctk.CTkToplevel):
         self._task = task
         self._is_edit_mode = task is not None
         self._available_employees = available_employees or []
+        self._available_templates = available_templates or []
 
         # Инициализация списка сотрудников
         if self._is_edit_mode and task and task.employee_ids:
             self._employee_ids = list(task.employee_ids)
         else:
             self._employee_ids = []
+
+        # Инициализация списка шаблонов задействований (Вариант A)
+        if self._is_edit_mode and task and getattr(task, "template_ids", None):
+            self._template_ids = list(task.template_ids)
+        else:
+            self._template_ids = []
 
         self._setup_window()
         self._create_widgets()
@@ -174,19 +187,18 @@ class TaskDialog(ctk.CTkToplevel):
         )
         self._emp_btn.pack(fill="x")
 
-        # Кнопки-заглушки (задействования)
-        stubs_frame = ctk.CTkFrame(self, fg_color="transparent")
-        stubs_frame.pack(fill="x", **padding)
+        # Кнопка управления шаблонами задействований (Вариант A)
+        tpl_frame = ctk.CTkFrame(self, fg_color="transparent")
+        tpl_frame.pack(fill="x", **padding)
 
-        ctk.CTkButton(
-            stubs_frame,
-            text="📅 Добавить задействования",
-            command=self._on_add_engagements,
+        self._tpl_btn = ctk.CTkButton(
+            tpl_frame,
+            text=f"📋 Задействования ({len(self._template_ids)})",
+            command=self._on_add_templates,
             anchor="w",
             height=35,
-            fg_color="gray70",
-            hover_color="gray60",
-        ).pack(fill="x")
+        )
+        self._tpl_btn.pack(fill="x")
 
         # Кнопки управления
         buttons_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -228,13 +240,32 @@ class TaskDialog(ctk.CTkToplevel):
             self._employee_ids = result
             self._emp_btn.configure(text=f"👥 Сотрудники ({len(self._employee_ids)})")
 
-    def _on_add_engagements(self) -> None:
-        log_ui_event(self._logger, "TaskDialog.btn_add_engagements", "click")
-        messagebox.showinfo(
-            "В разработке",
-            "Функция добавления задействований будет реализована позже.",
-            parent=self,
+    def _on_add_templates(self) -> None:
+        log_ui_event(self._logger, "TaskDialog.btn_add_templates", "click")
+
+        if not self._available_templates:
+            messagebox.showinfo(
+                "Нет шаблонов",
+                "Список шаблонов задействований пуст. Сначала создайте шаблоны "
+                "во вкладке «Задействования».",
+                parent=self,
+            )
+            return
+
+        dialog = EngagementTemplateSelectDialog(
+            master=self,
+            logger=self._logger,
+            templates=self._available_templates,
+            selected_ids=self._template_ids,
         )
+        self.wait_window(dialog)
+
+        result = dialog.get_result()
+        if result is not None:
+            self._template_ids = result
+            self._tpl_btn.configure(
+                text=f"📋 Шаблоны задействований ({len(self._template_ids)})"
+            )
 
     def _on_cancel(self) -> None:
         log_ui_event(self._logger, "TaskDialog.btn_cancel", "click")
@@ -263,12 +294,17 @@ class TaskDialog(ctk.CTkToplevel):
             )
             return
 
+        # Проверка изменений для режима редактирования
         if self._is_edit_mode and self._task is not None:
             employees_changed = set(self._employee_ids) != set(self._task.employee_ids or [])
+            templates_changed = set(self._template_ids) != set(
+                getattr(self._task, "template_ids", []) or []
+            )
             if (
                     name == self._task.name
                     and period_type.value == self._task.period_type
                     and not employees_changed
+                    and not templates_changed
             ):
                 self._logger.debug("TaskDialog: данные не изменились, закрытие без сохранения")
                 self.destroy()
@@ -280,11 +316,14 @@ class TaskDialog(ctk.CTkToplevel):
                 name=name,
                 period_type=period_type,
                 employee_ids=self._employee_ids if self._employee_ids else None,
+                template_ids=self._template_ids if self._template_ids else None,
             )
             action_name = "Редактирование задачи (диалог)"
             action_details = (
                 f"ID: {self._task.id}, Новое имя: {name}, "
-                f"Период: {period_type.value}, Сотрудников: {len(self._employee_ids)}"
+                f"Период: {period_type.value}, "
+                f"Сотрудников: {len(self._employee_ids)}, "
+                f"Шаблонов: {len(self._template_ids)}"
             )
         else:
             schema = TaskCreateSchema(
@@ -292,11 +331,16 @@ class TaskDialog(ctk.CTkToplevel):
                 period_type=period_type,
                 anchor_date=date.today(),
                 employee_ids=self._employee_ids if self._employee_ids else None,
+                template_ids=self._template_ids if self._template_ids else None,
                 duty_type_ids=[],
                 reference_id=None,
             )
             action_name = "Создание задачи (диалог)"
-            action_details = f"Название: {name}, Период: {period_type.value}, Сотрудников: {len(self._employee_ids)}"
+            action_details = (
+                f"Название: {name}, Период: {period_type.value}, "
+                f"Сотрудников: {len(self._employee_ids)}, "
+                f"Шаблонов: {len(self._template_ids)}"
+            )
 
         log_user_action(self._logger, action_name, action_details)
 

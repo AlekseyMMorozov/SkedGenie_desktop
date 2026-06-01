@@ -59,6 +59,15 @@ class EngagementController:
             log_user_error(self._logger, "get_engagements_by_employee", str(exc))
             raise
 
+    async def get_all(self) -> List[EngagementReadSchema]:
+        """Получить все задействования (для диалогов выбора)."""
+        try:
+            engagements = await self._engagement_repo.get_all()
+            return [self._to_read_schema(e) for e in engagements]
+        except Exception as exc:
+            log_user_error(self._logger, "get_all_engagements", str(exc))
+            raise
+
     async def create(self, schema: EngagementCreateSchema) -> EngagementReadSchema:
         try:
             # Валидация через тип

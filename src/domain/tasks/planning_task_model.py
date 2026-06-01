@@ -48,7 +48,7 @@ class PlanningTask(BaseModel):
 
     Контейнер для настройки параметров планирования:
     - название и тип периода (обязательные)
-    - опционально: сотрудники, типы дежурств, базовая дата
+    - опционально: сотрудники, шаблоны задействований, типы дежурств, базовая дата
     - автоматически рассчитываемые: period_start, period_end
     """
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -60,6 +60,7 @@ class PlanningTask(BaseModel):
     # Опциональные поля (могут быть добавлены позже)
     anchor_date: Optional[date] = Field(default=None)
     employee_ids: Optional[List[UUID]] = Field(default=None)
+    template_ids: Optional[List[UUID]] = Field(default=None, description="ID привязанных шаблонов задействований")
     duty_type_ids: Optional[List[UUID]] = Field(default=None)
     reference_id: Optional[str] = Field(default=None, max_length=255)
 
@@ -116,4 +117,3 @@ class PlanningTask(BaseModel):
     def clone(self) -> 'PlanningTask':
         """Создаёт копию задачи с новым ID (для шаблонов)."""
         return self.model_copy(update={'id': uuid4(), 'created_at': datetime.utcnow()})
-

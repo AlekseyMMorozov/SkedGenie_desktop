@@ -102,6 +102,7 @@ class PageFactory:
             bridge=self._bridge,
             logger=self._logger,
             employee_controller=self._employee_controller,
+            engagement_template_controller=self._engagement_template_controller,
         )
         widget.pack(fill="both", expand=True)
         return page, widget

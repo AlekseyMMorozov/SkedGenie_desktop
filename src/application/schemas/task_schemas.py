@@ -28,6 +28,7 @@ class TaskCreateSchema(BaseModel):
     # Опциональные поля (добавляются позже)
     anchor_date: Optional[date] = Field(default=None, description="Базовая дата для расчёта периодов")
     employee_ids: Optional[List[UUID]] = Field(default=None, description="ID сотрудников, закреплённых за задачей")
+    template_ids: Optional[List[UUID]] = Field(default=None, description="ID шаблонов задействований, привязанных к задаче")
     duty_type_ids: Optional[List[UUID]] = Field(default=None, description="ID типов задействований для задачи")
     reference_id: Optional[str] = Field(default=None, max_length=255, description="Внешний идентификатор/ссылка")
 
@@ -45,6 +46,7 @@ class TaskUpdateSchema(BaseModel):
     period_type: Optional[PeriodType] = Field(default=None)
     anchor_date: Optional[date] = Field(default=None)
     employee_ids: Optional[List[UUID]] = Field(default=None)
+    template_ids: Optional[List[UUID]] = Field(default=None, description="ID шаблонов задействований, привязанных к задаче")
     duty_type_ids: Optional[List[UUID]] = Field(default=None)
     reference_id: Optional[str] = Field(default=None, max_length=255)
 
@@ -58,8 +60,8 @@ class TaskReadSchema(BaseModel):
     period_type: str  # Строковое значение для удобства отображения
     anchor_date: Optional[date] = None
     employee_ids: Optional[List[UUID]] = None
+    template_ids: Optional[List[UUID]] = None
     duty_type_ids: Optional[List[UUID]] = None
     reference_id: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
-
