@@ -57,14 +57,7 @@ class EmployeeSQLAlchemyRepository(IEmployeeRepository):
     # ------------------------------------------------------------------
     @staticmethod
     def _to_orm(domain: Employee) -> EmployeeORMModel:
-        """Employee → EmployeeORMModel.
-
-        Args:
-            domain: Domain-объект сотрудника.
-
-        Returns:
-            ORM-модель для сохранения в БД.
-        """
+        """Employee → EmployeeORMModel."""
         return EmployeeORMModel(
             id=domain.id,
             last_name=domain.last_name,
@@ -88,22 +81,12 @@ class EmployeeSQLAlchemyRepository(IEmployeeRepository):
 
     @staticmethod
     def _to_domain(orm: EmployeeORMModel) -> Employee:
-        """EmployeeORMModel → Employee.
-
-        Args:
-            orm: ORM-модель из БД.
-
-        Returns:
-            Domain-объект сотрудника.
-        """
+        """EmployeeORMModel → Employee."""
         return Employee(
             id=orm.id,
             last_name=orm.last_name,
             first_name=orm.first_name,
             middle_name=orm.middle_name,
-            # display_name передаётся явно — пересчитывать не нужно,
-            # т.к. он уже корректно вычислен при создании в Domain
-            # и сохранён в БД.
             display_name=orm.display_name,
             position=orm.position,
             rank=orm.rank,
@@ -125,96 +108,58 @@ class EmployeeSQLAlchemyRepository(IEmployeeRepository):
     # Read operations
     # ------------------------------------------------------------------
     async def get_by_id(self, employee_id: UUID) -> Optional[Employee]:
-        """Получить сотрудника по ID."""
         async with self._session_factory() as session:
             result = await session.execute(
-                select(EmployeeORMModel).where(
-                    EmployeeORMModel.id == employee_id
-                )
+                select(EmployeeORMModel).where(EmployeeORMModel.id == employee_id)
             )
             orm = result.scalar_one_or_none()
             return self._to_domain(orm) if orm else None
 
     async def get_all(self) -> List[Employee]:
-        """Получить список всех сотрудников (включая архивных)."""
         async with self._session_factory() as session:
             result = await session.execute(select(EmployeeORMModel))
-            orm_list = result.scalars().all()
-            return [self._to_domain(orm) for orm in orm_list]
+            return [self._to_domain(orm) for orm in result.scalars().all()]
 
     async def get_active_only(self) -> List[Employee]:
-        """Получить список только активных сотрудников.
-
-        Использует индекс ``ix_employee_is_active`` для эффективного
-        фильтра.
-        """
         async with self._session_factory() as session:
             result = await session.execute(
                 select(EmployeeORMModel).where(
                     EmployeeORMModel.is_active == True  # noqa: E712
                 )
             )
-            orm_list = result.scalars().all()
-            return [self._to_domain(orm) for orm in orm_list]
+            return [self._to_domain(orm) for orm in result.scalars().all()]
 
     # ------------------------------------------------------------------
-    # Existence checks (защита от дубликатов)
+    # Existence checks
     # ------------------------------------------------------------------
     async def exists_by_email(
-        self,
-        email: str,
-        exclude_id: Optional[UUID] = None,
+        self, email: str, exclude_id: Optional[UUID] = None,
     ) -> bool:
-        """Проверить существование сотрудника с указанным email.
-
-        Использует эффективный запрос ``EXISTS`` вместо загрузки записей.
-        Учитывает, что в БД email хранится в lowercase (нормализация
-        в :class:`EmployeeCreateSchema`).
-        """
         if not email:
             return False
-
         async with self._session_factory() as session:
             conditions = [EmployeeORMModel.email == email]
             if exclude_id is not None:
                 conditions.append(EmployeeORMModel.id != exclude_id)
-
-            stmt = select(exists().where(*conditions))
-            result = await session.execute(stmt)
+            result = await session.execute(select(exists().where(*conditions)))
             return bool(result.scalar_one())
 
     async def exists_by_tab_number(
-        self,
-        tab_number: str,
-        exclude_id: Optional[UUID] = None,
+        self, tab_number: str, exclude_id: Optional[UUID] = None,
     ) -> bool:
-        """Проверить существование сотрудника с указанным табельным номером.
-
-        Учитывает, что табельный номер в БД хранится в uppercase
-        (нормализация в :class:`EmployeeCreateSchema`).
-        """
         if not tab_number:
             return False
-
         async with self._session_factory() as session:
             conditions = [EmployeeORMModel.tab_number == tab_number]
             if exclude_id is not None:
                 conditions.append(EmployeeORMModel.id != exclude_id)
-
-            stmt = select(exists().where(*conditions))
-            result = await session.execute(stmt)
+            result = await session.execute(select(exists().where(*conditions)))
             return bool(result.scalar_one())
 
     # ------------------------------------------------------------------
     # Write operations
     # ------------------------------------------------------------------
     async def create(self, employee: Employee) -> Employee:
-        """Создать нового сотрудника.
-
-        При нарушении UNIQUE-ограничений (email/tab_number) SQLAlchemy
-        бросит :class:`sqlalchemy.exc.IntegrityError` — контроллер должен
-        перехватить и преобразовать в :class:`DuplicateEmployeeError`.
-        """
         async with self._session_factory() as session:
             orm = self._to_orm(employee)
             session.add(orm)
@@ -223,20 +168,12 @@ class EmployeeSQLAlchemyRepository(IEmployeeRepository):
             return self._to_domain(orm)
 
     async def update(self, employee: Employee) -> Employee:
-        """Обновить существующего сотрудника.
-
-        Полностью заменяет все поля ORM из Domain-объекта (partial-update
-        выполняется контроллером через ``model_copy(update=...)``).
-        """
         async with self._session_factory() as session:
             result = await session.execute(
-                select(EmployeeORMModel).where(
-                    EmployeeORMModel.id == employee.id
-                )
+                select(EmployeeORMModel).where(EmployeeORMModel.id == employee.id)
             )
             orm = result.scalar_one()
 
-            # Полная замена всех полей
             orm.last_name = employee.last_name
             orm.first_name = employee.first_name
             orm.middle_name = employee.middle_name
@@ -259,17 +196,128 @@ class EmployeeSQLAlchemyRepository(IEmployeeRepository):
             return self._to_domain(orm)
 
     async def delete(self, employee_id: UUID) -> None:
-        """Физически удалить сотрудника из БД.
-
-        **Не выполняет** CASCADE-удаление из
-        :class:`PlanningTask.employee_ids` — это ответственность
-        :class:`ITaskRepository.remove_employee_from_all_tasks`.
-        """
         async with self._session_factory() as session:
             await session.execute(
-                delete(EmployeeORMModel).where(
-                    EmployeeORMModel.id == employee_id
-                )
+                delete(EmployeeORMModel).where(EmployeeORMModel.id == employee_id)
             )
             await session.commit()
 
+    # ------------------------------------------------------------------
+    # Helpers для работы со связями "сотрудник ↔ шаблон задействования"
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _orm_contains_engagement_template(
+        orm: EmployeeORMModel, template_id: UUID,
+    ) -> bool:
+        """Проверяет, содержит ли сотрудник UUID шаблона."""
+        try:
+            ids: list[str] = json.loads(orm.engagement_ids or "[]")
+        except (json.JSONDecodeError, TypeError):
+            return False
+        return str(template_id) in ids
+
+    @staticmethod
+    def _add_engagement_to_orm(
+        orm: EmployeeORMModel, template_id: UUID,
+    ) -> bool:
+        """Добавляет UUID шаблона в JSON-поле ``engagement_ids`` (in-place)."""
+        try:
+            ids: list[str] = json.loads(orm.engagement_ids or "[]")
+        except (json.JSONDecodeError, TypeError):
+            ids = []
+
+        target = str(template_id)
+        if target in ids:
+            return False
+
+        ids.append(target)
+        orm.engagement_ids = json.dumps(ids)
+        orm.updated_at = datetime.utcnow()
+        return True
+
+    @staticmethod
+    def _remove_engagement_from_orm(
+        orm: EmployeeORMModel, template_id: UUID,
+    ) -> bool:
+        """Удаляет UUID шаблона из JSON-поля ``engagement_ids`` (in-place)."""
+        try:
+            ids: list[str] = json.loads(orm.engagement_ids or "[]")
+        except (json.JSONDecodeError, TypeError):
+            return False
+
+        target = str(template_id)
+        if target not in ids:
+            return False
+
+        ids = [uid for uid in ids if uid != target]
+        orm.engagement_ids = json.dumps(ids)
+        orm.updated_at = datetime.utcnow()
+        return True
+
+    # ------------------------------------------------------------------
+    # Operations on employee ↔ engagement template links
+    # ------------------------------------------------------------------
+    async def add_engagement_template(
+        self, employee_id: UUID, template_id: UUID,
+    ) -> bool:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(EmployeeORMModel).where(EmployeeORMModel.id == employee_id)
+            )
+            orm = result.scalar_one_or_none()
+            if orm is None:
+                raise ValueError(f"Сотрудник с ID={employee_id} не найден")
+
+            added = self._add_engagement_to_orm(orm, template_id)
+            if added:
+                await session.commit()
+            return added
+
+    async def remove_engagement_template(
+        self, employee_id: UUID, template_id: UUID,
+    ) -> bool:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(EmployeeORMModel).where(EmployeeORMModel.id == employee_id)
+            )
+            orm = result.scalar_one_or_none()
+            if orm is None:
+                raise ValueError(f"Сотрудник с ID={employee_id} не найден")
+
+            removed = self._remove_engagement_from_orm(orm, template_id)
+            if removed:
+                await session.commit()
+            return removed
+
+    async def count_employees_using_engagement_template(
+        self, template_id: UUID,
+    ) -> int:
+        async with self._session_factory() as session:
+            result = await session.execute(select(EmployeeORMModel))
+            return sum(
+                1 for orm in result.scalars().all()
+                if self._orm_contains_engagement_template(orm, template_id)
+            )
+
+    async def remove_engagement_template_from_all_employees(
+        self, template_id: UUID,
+    ) -> int:
+        async with self._session_factory() as session:
+            result = await session.execute(select(EmployeeORMModel))
+            affected = 0
+            for orm in result.scalars().all():
+                if self._remove_engagement_from_orm(orm, template_id):
+                    affected += 1
+            if affected > 0:
+                await session.commit()
+            return affected
+
+    async def get_employees_by_engagement_template(
+        self, template_id: UUID,
+    ) -> List[Employee]:
+        async with self._session_factory() as session:
+            result = await session.execute(select(EmployeeORMModel))
+            return [
+                self._to_domain(orm) for orm in result.scalars().all()
+                if self._orm_contains_engagement_template(orm, template_id)
+            ]

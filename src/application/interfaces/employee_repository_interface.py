@@ -21,6 +21,9 @@ Application-слой зависит только от этого интерфе�
       ``remove_employee_from_all_tasks``), а не здесь — это соответствует
       принципу единственной ответственности (SRP): репозиторий сотрудников
       не должен знать о таблице задач.
+    - Связи с шаблонами задействований (``engagement_template_ids``)
+      хранятся как JSON-поле внутри сотрудника. Управление связями
+      реализовано через точечные методы (add/remove/count).
 """
 from __future__ import annotations
 
@@ -166,5 +169,105 @@ class IEmployeeRepository(ABC):
 
         Args:
             employee_id: UUID сотрудника для удаления.
+        """
+        ...
+
+    # ------------------------------------------------------------------
+    # Operations on employee ↔ engagement template links
+    # ------------------------------------------------------------------
+    @abstractmethod
+    async def add_engagement_template(
+        self,
+        employee_id: UUID,
+        template_id: UUID,
+    ) -> bool:
+        """Добавить шаблон задействования сотруднику.
+
+        Args:
+            employee_id: UUID сотрудника.
+            template_id: UUID шаблона задействования.
+
+        Returns:
+            ``True``, если шаблон был успешно добавлен;
+            ``False``, если он уже был в списке.
+
+        Raises:
+            ValueError: Если сотрудник с указанным ID не найден.
+        """
+        ...
+
+    @abstractmethod
+    async def remove_engagement_template(
+        self,
+        employee_id: UUID,
+        template_id: UUID,
+    ) -> bool:
+        """Удалить шаблон задействования у сотрудника.
+
+        Args:
+            employee_id: UUID сотрудника.
+            template_id: UUID шаблона задействования.
+
+        Returns:
+            ``True``, если шаблон был успешно удалён;
+            ``False``, если его не было в списке.
+
+        Raises:
+            ValueError: Если сотрудник с указанным ID не найден.
+        """
+        ...
+
+    @abstractmethod
+    async def count_employees_using_engagement_template(
+        self,
+        template_id: UUID,
+    ) -> int:
+        """Подсчитать количество сотрудников, использующих данный шаблон.
+
+        Используется для защиты от удаления шаблона, который активно
+        используется сотрудниками (аналог
+        :meth:`ITaskRepository.count_tasks_using_employee`).
+
+        Args:
+            template_id: UUID шаблона задействования.
+
+        Returns:
+            Количество сотрудников, у которых данный шаблон есть в
+            ``engagement_template_ids``.
+        """
+        ...
+
+    @abstractmethod
+    async def remove_engagement_template_from_all_employees(
+        self,
+        template_id: UUID,
+    ) -> int:
+        """Удалить шаблон задействования у всех сотрудников (каскадно).
+
+        Вызывается при удалении самого шаблона
+        (:class:`EngagementTemplate`) для очистки ссылок во всех
+        записях сотрудников.
+
+        Args:
+            template_id: UUID удаляемого шаблона.
+
+        Returns:
+            Количество затронутых записей сотрудников.
+        """
+        ...
+
+    @abstractmethod
+    async def get_employees_by_engagement_template(
+        self,
+        template_id: UUID,
+    ) -> List[Employee]:
+        """Получить всех сотрудников, у которых есть данный шаблон.
+
+        Args:
+            template_id: UUID шаблона задействования.
+
+        Returns:
+            Список :class:`Employee`, содержащих ``template_id``
+            в своём ``engagement_template_ids``.
         """
         ...

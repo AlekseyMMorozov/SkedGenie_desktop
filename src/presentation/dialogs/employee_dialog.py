@@ -12,7 +12,7 @@
     - Двухколоночный layout в ScrollableFrame.
     - Безопасный ввод даты через три поля (ДД/ММ/ГГГГ) во всех режимах.
     - Единая валидация через Pydantic-схемы + перехват доменных исключений.
-    - Кнопка "Задачи" для просмотра связей (только view/edit).
+    - Кнопки "Задачи" и "Задействования" для просмотра связей (только view/edit).
 """
 from __future__ import annotations
 
@@ -53,6 +53,7 @@ class EmployeeDialog(ctk.CTkToplevel):
             employee: Optional[EmployeeReadSchema] = None,
             prefill_data: Optional[dict] = None,
             on_view_tasks: Optional[Callable[[EmployeeReadSchema], None]] = None,
+            on_view_engagements: Optional[Callable[[EmployeeReadSchema], None]] = None,
             **kwargs,
     ) -> None:
         super().__init__(master, **kwargs)
@@ -62,6 +63,7 @@ class EmployeeDialog(ctk.CTkToplevel):
         self._prefill_data = prefill_data
         self._mode = mode  # "create" | "view" | "edit"
         self._on_view_tasks = on_view_tasks
+        self._on_view_engagements = on_view_engagements
 
         # Поля ввода
         self._entry_last_name: ctk.CTkEntry | None = None
@@ -82,6 +84,7 @@ class EmployeeDialog(ctk.CTkToplevel):
         self._btn_primary: ctk.CTkButton | None = None
         self._btn_secondary: ctk.CTkButton | None = None
         self._btn_tasks: ctk.CTkButton | None = None
+        self._btn_engagements: ctk.CTkButton | None = None
 
         self._setup_window()
         self._create_widgets()
@@ -174,6 +177,14 @@ class EmployeeDialog(ctk.CTkToplevel):
                 fg_color="#1f538d", hover_color="#1a4575", height=32, width=100,
             )
             self._btn_tasks.pack(side="left", padx=(0, 5))
+
+        # Кнопка "Задействования" (только для view/edit)
+        if self._employee and self._on_view_engagements:
+            self._btn_engagements = ctk.CTkButton(
+                left_buttons_frame, text="Задействования", command=self._on_view_engagements_click,
+                fg_color="#5a2d82", hover_color="#4a2570", height=32, width=130,
+            )
+            self._btn_engagements.pack(side="left", padx=(0, 5))
 
         # Правая группа кнопок
         right_buttons_frame = ctk.CTkFrame(btn_inner, fg_color="transparent")
@@ -334,16 +345,22 @@ class EmployeeDialog(ctk.CTkToplevel):
             self._btn_secondary.configure(text="Закрыть")
             if self._btn_tasks:
                 self._btn_tasks.configure(state="normal")
+            if self._btn_engagements:
+                self._btn_engagements.configure(state="normal")
         elif self._mode == "edit":
             self._btn_primary.configure(text="Сохранить изменения", command=self._on_save_click)
             self._btn_secondary.configure(text="Отмена", command=self._on_cancel)
             if self._btn_tasks:
                 self._btn_tasks.configure(state="normal")
+            if self._btn_engagements:
+                self._btn_engagements.configure(state="normal")
         else:  # create
             self._btn_primary.configure(text="Сохранить", command=self._on_save_click)
             self._btn_secondary.configure(text="Отмена", command=self._on_cancel)
             if self._btn_tasks:
                 self._btn_tasks.configure(state="disabled")
+            if self._btn_engagements:
+                self._btn_engagements.configure(state="disabled")
 
     def _on_view_tasks_click(self) -> None:
         """Обработчик кнопки 'Задачи'."""
@@ -351,6 +368,13 @@ class EmployeeDialog(ctk.CTkToplevel):
             log_ui_event(self._logger, widget="EmployeeDialog", event="VIEW_TASKS_CLICKED",
                          data=f"employee_id={self._employee.id}")
             self._on_view_tasks(self._employee)
+
+    def _on_view_engagements_click(self) -> None:
+        """Обработчик кнопки 'Задействования'."""
+        if self._employee and self._on_view_engagements:
+            log_ui_event(self._logger, widget="EmployeeDialog", event="VIEW_ENGAGEMENTS_CLICKED",
+                         data=f"employee_id={self._employee.id}")
+            self._on_view_engagements(self._employee)
 
     def _on_edit_click(self) -> None:
         """Переключение из view в edit."""

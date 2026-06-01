@@ -20,6 +20,7 @@ from src.application.schemas.employee_schemas import EmployeeReadSchema
 from src.core.logging_config import log_ui_event, log_user_action, log_user_error
 from src.presentation.async_bridge import AsyncBridge
 from src.presentation.controllers.employee_controller import EmployeeController
+from src.presentation.controllers.engagement_template_controller import EngagementTemplateController
 from src.presentation.controllers.task_controller import TaskController
 from src.presentation.widgets.employee_dialog_coordinator import EmployeeDialogCoordinator
 
@@ -44,6 +45,7 @@ class EmployeeListWidget(ctk.CTkFrame):
         bridge: AsyncBridge,
         logger: logging.Logger,
         task_controller: Optional[TaskController] = None,
+        engagement_template_controller: Optional[EngagementTemplateController] = None,
         **kwargs,
     ) -> None:
         super().__init__(master, **kwargs)
@@ -58,6 +60,7 @@ class EmployeeListWidget(ctk.CTkFrame):
             logger=logger,
             on_success=self.refresh,
             task_controller=task_controller,
+            engagement_template_controller=engagement_template_controller,
         )
 
         # Текущий порядок столбцов (можно сохранять в настройки)
